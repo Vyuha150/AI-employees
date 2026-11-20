@@ -87,6 +87,13 @@ def validate_response(
         check_refs(f"findings/{i}", refs)
     for i, mem in enumerate(response["memory_candidates"]):
         check_refs(f"memory_candidates/{i}", mem["source_ids"])
+        if mem.get("scope") in ("CUSTOMER", "PROJECT") and not mem.get("scope_ref"):
+            result.errors.append(f"memory_candidates/{i}: {mem['scope']} scope requires scope_ref (§17)")
+    for i, rec in enumerate(response["recommendations"]):
+        refs = rec.get("evidence_source_ids", [])
+        check_refs(f"recommendations/{i}", refs)
+        if not refs:
+            result.warnings.append(f"recommendations/{i}: evidence cites no source ids (§16)")
 
     if response["response_type"] == "DAILY_BRIEF" and len(response["tasks"]) > 7:
         result.warnings.append("daily brief lists more than 7 priorities (§17)")

@@ -1,219 +1,772 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-command-center/schemas/structured_response.schema.json",
-  "title": "AI Business Command Center — Structured Agent Response",
-  "description": "Strict response contract (principles §25). Sub-objects follow §7 (recommendation), §8 (task), §26 (proposed action), §19 (memory candidate) and §22 (confidence).",
+  "title": "AI Business Command Center \u2014 Structured Agent Response",
+  "description": "Strict response contract (principles \u00a725). Sub-objects follow \u00a77 (recommendation), \u00a78 (task), \u00a726 (proposed action), \u00a719 (memory candidate) and \u00a722 (confidence).",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "response_type", "agent_id", "executive_summary", "facts", "assumptions",
-    "findings", "recommendations", "tasks", "proposed_actions", "approval_requests",
-    "alerts", "kpi_impacts", "memory_candidates", "confidence", "sources"
+    "response_type",
+    "agent_id",
+    "executive_summary",
+    "facts",
+    "assumptions",
+    "findings",
+    "recommendations",
+    "tasks",
+    "proposed_actions",
+    "approval_requests",
+    "alerts",
+    "kpi_impacts",
+    "memory_candidates",
+    "confidence",
+    "sources"
   ],
   "properties": {
     "response_type": {
-      "enum": ["QUESTION", "ANALYSIS", "REPORT", "TASK", "PLAN", "RECOMMENDATION", "WORKFLOW", "ACTION_REQUEST", "REVIEW", "DAILY_BRIEF", "END_OF_DAY_REVIEW", "DELEGATION_PLAN", "SYNTHESIS"]
+      "enum": [
+        "QUESTION",
+        "ANALYSIS",
+        "REPORT",
+        "TASK",
+        "PLAN",
+        "RECOMMENDATION",
+        "WORKFLOW",
+        "ACTION_REQUEST",
+        "REVIEW",
+        "DAILY_BRIEF",
+        "END_OF_DAY_REVIEW",
+        "DELEGATION_PLAN",
+        "SYNTHESIS"
+      ]
     },
-    "agent_id": { "type": "string", "minLength": 1 },
-    "executive_summary": { "type": "string", "minLength": 1 },
-    "facts": { "type": "array", "items": { "$ref": "#/$defs/statement" } },
-    "assumptions": { "type": "array", "items": { "$ref": "#/$defs/statement" } },
-    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
-    "recommendations": { "type": "array", "items": { "$ref": "#/$defs/recommendation" } },
-    "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
-    "proposed_actions": { "type": "array", "items": { "$ref": "#/$defs/proposed_action" } },
-    "approval_requests": { "type": "array", "items": { "$ref": "#/$defs/approval_request" } },
-    "alerts": { "type": "array", "items": { "$ref": "#/$defs/alert" } },
-    "kpi_impacts": { "type": "array", "items": { "$ref": "#/$defs/kpi_impact" } },
-    "memory_candidates": { "type": "array", "items": { "$ref": "#/$defs/memory_candidate" } },
-    "confidence": { "$ref": "#/$defs/confidence" },
-    "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } }
+    "agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "executive_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/statement"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/statement"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/recommendation"
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "proposed_actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/proposed_action"
+      }
+    },
+    "approval_requests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/approval_request"
+      }
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alert"
+      }
+    },
+    "kpi_impacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/kpi_impact"
+      }
+    },
+    "memory_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/memory_candidate"
+      }
+    },
+    "confidence": {
+      "$ref": "#/$defs/confidence"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    }
   },
   "$defs": {
-    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
-    "risk_class": { "enum": ["GREEN", "AMBER", "RED"] },
-    "level": { "enum": ["LOW", "MEDIUM", "HIGH"] },
+    "confidence": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "risk_class": {
+      "enum": [
+        "GREEN",
+        "AMBER",
+        "RED"
+      ]
+    },
+    "level": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ]
+    },
     "money": {
-      "description": "Monetary estimate. Use null when unknown — never fabricate (§3).",
-      "type": ["object", "null"],
+      "description": "Monetary estimate. Use null when unknown \u2014 never fabricate (\u00a73).",
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["amount", "currency", "basis"],
+      "required": [
+        "amount",
+        "currency",
+        "basis"
+      ],
       "properties": {
-        "amount": { "type": "number" },
-        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-        "period": { "type": "string" },
-        "basis": { "type": "string", "description": "How the estimate was derived." }
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "period": {
+          "type": "string"
+        },
+        "basis": {
+          "type": "string",
+          "description": "How the estimate was derived."
+        }
       }
     },
     "statement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["text"],
+      "required": [
+        "text"
+      ],
       "properties": {
-        "text": { "type": "string", "minLength": 1 },
-        "source_ids": { "type": "array", "items": { "type": "string" } }
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "finding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["text", "kind", "confidence"],
+      "required": [
+        "text",
+        "kind",
+        "confidence"
+      ],
       "properties": {
-        "text": { "type": "string", "minLength": 1 },
-        "kind": { "enum": ["FACT", "INFERENCE", "ASSUMPTION"] },
-        "cause_status": { "enum": ["VERIFIED", "SUSPECTED", "NOT_APPLICABLE"] },
-        "confidence": { "$ref": "#/$defs/confidence" },
-        "source_ids": { "type": "array", "items": { "type": "string" } }
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "FACT",
+            "INFERENCE",
+            "ASSUMPTION"
+          ]
+        },
+        "cause_status": {
+          "enum": [
+            "VERIFIED",
+            "SUSPECTED",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "recommendation": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "problem_or_opportunity", "evidence", "recommendation", "why_now", "expected_impact",
-        "impact_category", "estimated_value", "estimated_cost", "effort", "urgency",
-        "dependencies", "risks", "reversible", "confidence", "suggested_owner", "kpis_affected"
+        "problem_or_opportunity",
+        "evidence",
+        "recommendation",
+        "why_now",
+        "expected_impact",
+        "impact_category",
+        "estimated_value",
+        "estimated_cost",
+        "effort",
+        "urgency",
+        "dependencies",
+        "risks",
+        "reversible",
+        "confidence",
+        "suggested_owner",
+        "kpis_affected"
       ],
       "properties": {
-        "problem_or_opportunity": { "type": "string", "minLength": 1 },
-        "evidence": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "recommendation": { "type": "string", "minLength": 1 },
-        "why_now": { "type": "string" },
-        "expected_impact": { "type": "string" },
-        "impact_category": { "enum": ["REVENUE", "GROSS_MARGIN", "CASHFLOW", "CUSTOMER_VALUE", "OPERATIONAL_RELIABILITY", "PRODUCTIVITY", "RISK_REDUCTION", "STRATEGIC"] },
-        "estimated_value": { "$ref": "#/$defs/money" },
-        "estimated_cost": { "$ref": "#/$defs/money" },
-        "effort": { "$ref": "#/$defs/level" },
-        "urgency": { "$ref": "#/$defs/level" },
-        "dependencies": { "type": "array", "items": { "type": "string" } },
-        "risks": { "type": "array", "items": { "type": "string" } },
-        "reversible": { "type": "boolean" },
-        "confidence": { "$ref": "#/$defs/confidence" },
-        "suggested_owner": { "type": "string" },
-        "kpis_affected": { "type": "array", "items": { "type": "string" } },
-        "change_management": { "$ref": "#/$defs/change_management" }
+        "problem_or_opportunity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_now": {
+          "type": "string"
+        },
+        "expected_impact": {
+          "type": "string"
+        },
+        "impact_category": {
+          "enum": [
+            "REVENUE",
+            "GROSS_MARGIN",
+            "CASHFLOW",
+            "CUSTOMER_VALUE",
+            "OPERATIONAL_RELIABILITY",
+            "PRODUCTIVITY",
+            "RISK_REDUCTION",
+            "STRATEGIC"
+          ]
+        },
+        "estimated_value": {
+          "$ref": "#/$defs/money"
+        },
+        "estimated_cost": {
+          "$ref": "#/$defs/money"
+        },
+        "effort": {
+          "$ref": "#/$defs/level"
+        },
+        "urgency": {
+          "$ref": "#/$defs/level"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "suggested_owner": {
+          "type": "string"
+        },
+        "kpis_affected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "change_management": {
+          "$ref": "#/$defs/change_management"
+        },
+        "evidence_source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Source ids backing the evidence (\u00a716). Validated against sources."
+        }
       }
     },
     "change_management": {
-      "description": "Required content for system/business change suggestions (§21).",
+      "description": "Required content for system/business change suggestions (\u00a721).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["current_state", "problem", "desired_state", "change", "expected_benefit", "cost", "risk", "implementation_steps", "validation_method", "rollback_plan"],
+      "required": [
+        "current_state",
+        "problem",
+        "desired_state",
+        "change",
+        "expected_benefit",
+        "cost",
+        "risk",
+        "implementation_steps",
+        "validation_method",
+        "rollback_plan"
+      ],
       "properties": {
-        "current_state": { "type": "string" },
-        "problem": { "type": "string" },
-        "desired_state": { "type": "string" },
-        "change": { "type": "string" },
-        "expected_benefit": { "type": "string" },
-        "cost": { "type": "string" },
-        "risk": { "type": "string" },
-        "implementation_steps": { "type": "array", "items": { "type": "string" } },
-        "validation_method": { "type": "string" },
-        "rollback_plan": { "type": "string" },
-        "kpi_before": { "type": "string" },
-        "kpi_after_target": { "type": "string" }
+        "current_state": {
+          "type": "string"
+        },
+        "problem": {
+          "type": "string"
+        },
+        "desired_state": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "expected_benefit": {
+          "type": "string"
+        },
+        "cost": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string"
+        },
+        "implementation_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validation_method": {
+          "type": "string"
+        },
+        "rollback_plan": {
+          "type": "string"
+        },
+        "kpi_before": {
+          "type": "string"
+        },
+        "kpi_after_target": {
+          "type": "string"
+        }
       }
     },
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "objective", "description", "owner", "priority", "dependencies", "expected_output", "completion_criteria", "kpi_affected", "risk_level"],
+      "required": [
+        "title",
+        "objective",
+        "description",
+        "owner",
+        "priority",
+        "dependencies",
+        "expected_output",
+        "completion_criteria",
+        "kpi_affected",
+        "risk_level"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "objective": { "type": "string" },
-        "description": { "type": "string" },
-        "owner": { "type": "string" },
-        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
-        "due_date": { "type": ["string", "null"], "format": "date" },
-        "dependencies": { "type": "array", "items": { "type": "string" } },
-        "expected_output": { "type": "string" },
-        "completion_criteria": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "kpi_affected": { "type": "array", "items": { "type": "string" } },
-        "risk_level": { "$ref": "#/$defs/risk_class" }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "objective": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "due_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_output": {
+          "type": "string"
+        },
+        "completion_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "kpi_affected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risk_level": {
+          "$ref": "#/$defs/risk_class"
+        }
       }
     },
     "proposed_action": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["action_id", "action_type", "tool", "reason", "parameters", "risk_class", "financial_impact", "customer_impact", "reversible", "approval_required"],
+      "required": [
+        "action_id",
+        "action_type",
+        "tool",
+        "reason",
+        "parameters",
+        "risk_class",
+        "financial_impact",
+        "customer_impact",
+        "reversible",
+        "approval_required"
+      ],
       "properties": {
-        "action_id": { "type": "string" },
-        "action_type": { "type": "string" },
-        "tool": { "type": "string" },
-        "reason": { "type": "string" },
-        "parameters": { "type": "object" },
-        "risk_class": { "$ref": "#/$defs/risk_class" },
-        "financial_impact": { "$ref": "#/$defs/money" },
-        "customer_impact": { "type": "string" },
-        "reversible": { "type": "boolean" },
-        "approval_required": { "type": "boolean" }
+        "action_id": {
+          "type": "string"
+        },
+        "action_type": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "risk_class": {
+          "$ref": "#/$defs/risk_class"
+        },
+        "financial_impact": {
+          "$ref": "#/$defs/money"
+        },
+        "customer_impact": {
+          "type": "string"
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "approval_required": {
+          "type": "boolean"
+        }
       },
       "allOf": [
         {
-          "description": "§6: AMBER and RED actions always require approval at the contract level; the application may relax AMBER via policy, never RED.",
-          "if": { "properties": { "risk_class": { "enum": ["AMBER", "RED"] } } },
-          "then": { "properties": { "approval_required": { "const": true } } }
+          "description": "\u00a76: AMBER and RED actions always require approval at the contract level; the application may relax AMBER via policy, never RED.",
+          "if": {
+            "properties": {
+              "risk_class": {
+                "enum": [
+                  "AMBER",
+                  "RED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "approval_required": {
+                "const": true
+              }
+            }
+          }
         }
       ]
     },
     "approval_request": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["action_id", "approver_role", "summary", "risk_class"],
+      "required": [
+        "action_id",
+        "approver_role",
+        "summary",
+        "risk_class"
+      ],
       "properties": {
-        "action_id": { "type": "string", "description": "References proposed_actions[].action_id." },
-        "approver_role": { "type": "string" },
-        "summary": { "type": "string" },
-        "risk_class": { "$ref": "#/$defs/risk_class" },
-        "deadline": { "type": ["string", "null"] }
+        "action_id": {
+          "type": "string",
+          "description": "References proposed_actions[].action_id."
+        },
+        "approver_role": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "risk_class": {
+          "$ref": "#/$defs/risk_class"
+        },
+        "deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "alert": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["severity", "title", "detail"],
+      "required": [
+        "severity",
+        "title",
+        "detail"
+      ],
       "properties": {
-        "severity": { "enum": ["INFO", "WARNING", "CRITICAL"] },
-        "title": { "type": "string" },
-        "detail": { "type": "string" },
-        "owner": { "type": "string" }
+        "severity": {
+          "enum": [
+            "INFO",
+            "WARNING",
+            "CRITICAL"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        }
       }
     },
     "kpi_impact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kpi", "direction"],
+      "required": [
+        "kpi",
+        "direction"
+      ],
       "properties": {
-        "kpi": { "type": "string" },
-        "current": { "type": ["number", "string", "null"] },
-        "target": { "type": ["number", "string", "null"] },
-        "previous_period": { "type": ["number", "string", "null"] },
-        "variance": { "type": ["number", "string", "null"] },
-        "trend": { "enum": ["UP", "DOWN", "FLAT", "UNKNOWN"] },
-        "direction": { "enum": ["IMPROVE", "WORSEN", "NEUTRAL", "UNKNOWN"] },
-        "note": { "type": "string" }
+        "kpi": {
+          "type": "string"
+        },
+        "current": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "previous_period": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "variance": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "trend": {
+          "enum": [
+            "UP",
+            "DOWN",
+            "FLAT",
+            "UNKNOWN"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "IMPROVE",
+            "WORSEN",
+            "NEUTRAL",
+            "UNKNOWN"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
       }
     },
     "memory_candidate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["content", "category", "source_ids", "rationale"],
+      "required": [
+        "content",
+        "category",
+        "source_ids",
+        "rationale"
+      ],
       "properties": {
-        "content": { "type": "string" },
-        "category": { "enum": ["PRICING_POLICY", "CUSTOMER_PREFERENCE", "BUSINESS_RULE", "STRATEGIC_DECISION", "VENDOR_CONSTRAINT", "OTHER"] },
-        "source_ids": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "§19: memory must be supported by a source." },
-        "rationale": { "type": "string" }
+        "content": {
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "PRICING_POLICY",
+            "CUSTOMER_PREFERENCE",
+            "BUSINESS_RULE",
+            "STRATEGIC_DECISION",
+            "VENDOR_CONSTRAINT",
+            "OTHER"
+          ]
+        },
+        "source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "\u00a719: memory must be supported by a source."
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "ORGANIZATION",
+            "DEPARTMENT",
+            "AGENT",
+            "CUSTOMER",
+            "PROJECT"
+          ],
+          "description": "Defaults to AGENT (narrowest) when omitted."
+        },
+        "scope_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Department, agent, customer or project id for scoped memory."
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "review_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
       }
     },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "type", "reference"],
+      "required": [
+        "id",
+        "type",
+        "reference"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "type": { "enum": ["TOOL_RESULT", "DATABASE", "DOCUMENT", "MEMORY", "KNOWLEDGE", "USER", "AGENT", "WEB"] },
-        "reference": { "type": "string" },
-        "retrieved_at": { "type": "string" }
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "COMPANY_DATABASE",
+            "DOCUMENT",
+            "USER_MESSAGE",
+            "TOOL_RESULT",
+            "WEB_SOURCE",
+            "SYSTEM_CONFIG",
+            "HUMAN_DECISION",
+            "ACCEPTED_MEMORY",
+            "AGENT_OUTPUT",
+            "DATABASE",
+            "MEMORY",
+            "KNOWLEDGE",
+            "USER",
+            "AGENT",
+            "WEB"
+          ],
+          "description": "Canonical types first; DATABASE, MEMORY, KNOWLEDGE, USER, AGENT, WEB are legacy aliases (see sources.py)."
+        },
+        "reference": {
+          "type": "string"
+        },
+        "retrieved_at": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authority_level": {
+          "enum": [
+            "AUTHORITATIVE",
+            "SECONDARY",
+            "UNVERIFIED"
+          ]
+        }
       }
     }
   }

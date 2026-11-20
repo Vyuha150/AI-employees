@@ -1,0 +1,56 @@
+# Example organization policy. Thresholds are placeholders: set them for your organization.
+# The engine is currency-neutral; amounts are compared only in `currency`, and any other
+# currency escalates the action to RED (it cannot be compared safely).
+organization_id: org_example
+name: Example Organization
+currency: INR
+timezone: Asia/Kolkata
+
+risk:
+  # Applies to any tool whose payload carries `amount` and that has no specific rule below.
+  global_monetary:
+    amount_field: amount
+    currency_field: currency
+    amber_at: 0
+    red_at: 1000000
+  monetary:
+    create_purchase_order:
+      amount_field: amount
+      currency_field: currency
+      amber_at: 0
+      red_at: 1000000          # 10,00,000 and above is RED
+    publish_marketing_content:
+      amount_field: spend
+      currency_field: currency
+      amber_at: 0
+      red_at: 500000
+      required: false        # unpaid content carries no spend field
+  recipients:
+    send_customer_message:
+      field: recipients
+      red_at_count: 25         # bulk outreach is RED
+  sensitive_fields:
+    modify_customer_record:
+      field: changes
+      red_if_keys: [credit_limit, payment_terms, billing_details, contract_value, legal_entity]
+
+approvals:
+  ttl_hours: {GREEN: 72, AMBER: 72, RED: 24}
+  max_ttl_hours: {GREEN: 168, AMBER: 168, RED: 24}
+  approver_roles:
+    default: {GREEN: MANAGER, AMBER: MANAGER, RED: FOUNDER}
+    tools:
+      create_purchase_order: {AMBER: FINANCE_APPROVER, RED: FOUNDER}
+      initiate_payment: {RED: FOUNDER}
+      publish_marketing_content: {AMBER: MARKETING_APPROVER, RED: FOUNDER}
+
+# AMBER tools that ELEVATED-autonomy agents may auto-execute. Deliberately empty.
+amber_auto_execute_tools: []
+
+orchestration:
+  max_agents_per_orchestration: 4
+  max_delegation_depth: 1
+  max_total_cost: 5.0
+  max_total_tokens: 500000
+  max_runtime_seconds: 900
+  cost_currency: USD

@@ -30,6 +30,17 @@ REQUIRED_PROFILE_FIELDS: tuple[str, ...] = (
     "CURRENT_USER_PERMISSIONS",
 )
 
+# Descriptive fields an agent profile may add. They never grant anything; permissions come
+# only from ALLOWED_TOOLS and CURRENT_USER_PERMISSIONS. Unknown fields are still rejected.
+OPTIONAL_PROFILE_FIELDS: tuple[str, ...] = (
+    "RESPONSIBILITIES",
+    "ESCALATION_RULES",
+    "PROHIBITED_ACTIONS",
+    "BOUNDARIES",
+    "DELEGATION",
+    "OUTPUT_PREFERENCES",
+)
+
 
 def _render_value(value: Any) -> str:
     if isinstance(value, str):
@@ -49,13 +60,14 @@ def render_profile(profile: Mapping[str, Any]) -> str:
     missing = [f for f in REQUIRED_PROFILE_FIELDS if f not in profile]
     if missing:
         raise ValueError(f"Agent profile is missing required fields: {', '.join(missing)}")
-    unknown = sorted(set(profile) - set(REQUIRED_PROFILE_FIELDS))
+    unknown = sorted(set(profile) - set(REQUIRED_PROFILE_FIELDS) - set(OPTIONAL_PROFILE_FIELDS))
     if unknown:
         raise ValueError(f"Agent profile has unknown fields: {', '.join(unknown)}")
 
     # Fence the profile so that text inside memory/knowledge/task fields is clearly data (§20).
     lines = ["<agent_profile>"]
     lines += [f"{field}: {_render_value(profile[field])}" for field in REQUIRED_PROFILE_FIELDS]
+    lines += [f"{field}: {_render_value(profile[field])}" for field in OPTIONAL_PROFILE_FIELDS if field in profile]
     lines.append("</agent_profile>")
     return "\n".join(lines)
 

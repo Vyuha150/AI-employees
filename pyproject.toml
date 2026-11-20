@@ -1,9 +1,9 @@
 [project]
 name = "ai-command-center"
-version = "0.1.0"
+version = "0.2.0"
 description = "Operating principles, response contracts and governance checks for the AI Business Command Center agent workforce."
 requires-python = ">=3.10"
-dependencies = ["jsonschema>=4.18"]
+dependencies = ["jsonschema>=4.18", "pyyaml>=6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
