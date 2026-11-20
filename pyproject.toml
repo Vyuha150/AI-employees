@@ -1,0 +1,23 @@
+[project]
+name = "ai-command-center"
+version = "0.1.0"
+description = "Operating principles, response contracts and governance checks for the AI Business Command Center agent workforce."
+requires-python = ">=3.10"
+dependencies = ["jsonschema>=4.18"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+build-agent-prompt = "command_center.prompt:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
