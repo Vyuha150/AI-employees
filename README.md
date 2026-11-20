@@ -50,8 +50,16 @@ ai-command-center config validate --env development
 CC_ENVIRONMENT=production CC_CONFIG_DIR=/etc/command-center ai-command-center config validate
 ai-command-center readiness --env production        # READY | DEGRADED | NOT_READY (exit 0 / 1 / 2)
 CC_DATABASE_URL=... ai-command-center connectors status --org <slug>
+CC_DATABASE_URL=... ai-command-center migrate          # core migrations; RLS applied separately
+ai-command-center serve --port 8080                   # HTTP API + SSE (needs the [api] extra)
+ai-command-center worker --health-port 8081           # durable queue worker
+ai-command-center scheduler --health-port 8082        # single leader (PostgreSQL advisory lock)
+ai-command-center openapi > openapi.json
 pytest                                        # add CC_TEST_DATABASE_URL=<admin dsn> for PostgreSQL tests
 ```
+
+Frontend contract: `docs/frontend_api.md` and `docs/openapi.json`, both generated from the route table and
+checked by the tests. Deployment and Supabase steps: `docs/deployment.md`.
 
 Production refuses to start while any security-critical or financial value is still listed under
 `placeholders`, or while the example policy is in use. Copy the packaged config to your own directory, review

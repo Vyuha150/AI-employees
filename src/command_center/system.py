@@ -96,6 +96,13 @@ class CommandCenter:
         if r is not None and getattr(r, "scheduled_jobs", None) is not None:
             kw.setdefault("jobs", r.scheduled_jobs)
             kw.setdefault("runs", r.scheduled_runs)
+        else:   # in-memory: keep schedule state for this process's lifetime (scheduler restarts reuse it)
+            from .storage import InMemoryRepository
+            if not hasattr(self, "_schedule_state"):
+                object.__setattr__(self, "_schedule_state", (InMemoryRepository("job_id"),
+                                                             InMemoryRepository("scheduled_run_id")))
+            kw.setdefault("jobs", self._schedule_state[0])
+            kw.setdefault("runs", self._schedule_state[1])
         return Scheduler(self.policy, self.registry, self.audit, dispatcher, idempotency=self.idempotency,
                          clock=self.clock, **kw)
 

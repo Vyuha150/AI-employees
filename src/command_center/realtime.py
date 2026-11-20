@@ -17,7 +17,7 @@ from .common import new_id
 
 SUMMARY_KEYS = ("status", "severity", "title", "category", "risk_class", "tool_name", "action_type", "required_role",
                 "reason", "priority", "owner", "validity", "decision", "workflow_id", "step_id", "objective",
-                "impact_category", "confidence", "kpi")
+                "impact_category", "confidence", "kpi", "outcome", "approval_id", "seq", "message_id")
 _SECRETISH = re.compile(r"(sk-ant-|-----BEGIN|password|secret|token=|apikey|api_key)", re.I)
 MAX_VALUE_CHARS = 200
 
@@ -44,6 +44,13 @@ _DIRECT = {
     EventType.WORKFLOW_STARTED: "workflow.started",
     EventType.WORKFLOW_COMPLETED: "workflow.completed",
     EventType.WORKFLOW_FAILED: "workflow.failed",
+    EventType.TOOL_EXECUTED: "tool.completed",
+    EventType.TOOL_FAILED: "tool.failed",
+    EventType.APPROVAL_EXECUTION_UNKNOWN: "reconciliation.required",
+    EventType.APPROVAL_RECONCILED: "reconciliation.completed",
+    EventType.APPROVAL_RECONCILIATION_UNRESOLVED: "reconciliation.unresolved",
+    EventType.ALERT_ACKNOWLEDGED: "alert.acknowledged",
+    EventType.MESSAGE_CREATED: "message.created",
 }
 REALTIME_EVENT_TYPES = frozenset(_DIRECT.values()) | {"run.waiting_approval", "run.resumed"}
 

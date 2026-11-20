@@ -62,6 +62,55 @@ def _connectors_status(args: argparse.Namespace) -> int:
     return 0 if all(r["state"] == "OK" for r in rows) else 1
 
 
+def _process(kind: str):
+    def run(args: argparse.Namespace) -> int:
+        import os
+        import threading
+
+        from . import bootstrap, logging_setup
+        logging_setup.configure(os.environ.get("CC_LOG_LEVEL", "INFO"))
+        dep = bootstrap.build_deployment(config_dir=args.config_dir)
+        if kind == "serve":
+            bootstrap.serve(dep, args.host or os.environ.get("CC_API_HOST", "0.0.0.0"),
+                            int(args.port or os.environ.get("CC_API_PORT", "8080")))
+            return 0
+        stop = threading.Event()
+        bootstrap.install_signal_handlers(stop)
+        if args.health_port:
+            bootstrap.health_server(dep, int(args.health_port))
+        if kind == "worker":
+            bootstrap.run_worker(dep, stop)
+        else:
+            bootstrap.run_scheduler(dep, stop, tick_seconds=float(args.tick_seconds))
+        return 0
+    return run
+
+
+def _migrate(args: argparse.Namespace) -> int:
+    import os
+    from .pg.database import Database, apply_migrations
+    dsn = os.environ.get("CC_DATABASE_URL")
+    if not dsn:
+        print("error: CC_DATABASE_URL is not set")
+        return 2
+    db = Database(dsn)
+    try:
+        applied = apply_migrations(db)
+    finally:
+        db.close()
+    print("applied: " + (", ".join(applied) if applied else "nothing (already current)"))
+    print("note: apply resources/migrations/supabase/0101_rls.sql separately on Supabase (docs/supabase_rls.md)")
+    return 0
+
+
+def _openapi(args: argparse.Namespace) -> int:
+    import json
+    from .http_api import build_routes
+    from .openapi import openapi_document
+    print(json.dumps(openapi_document(build_routes()), indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ai-command-center")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -84,6 +133,23 @@ def main(argv: list[str] | None = None) -> int:
     cs = con_sub.add_parser("status", help="configured / unavailable / stale / last refresh / latest error")
     cs.add_argument("--org", required=True, help="organization slug")
     cs.set_defaults(func=_connectors_status)
+
+    for kind, desc in (("serve", "run the HTTP API (uvicorn)"), ("worker", "run the durable queue worker"),
+                       ("scheduler", "run the scheduler (single leader)")):
+        sp = sub.add_parser(kind, help=desc)
+        sp.add_argument("--config-dir", default=None)
+        if kind == "serve":
+            sp.add_argument("--host", default=None)
+            sp.add_argument("--port", default=None)
+        else:
+            sp.add_argument("--health-port", default=None, help="serve /health/live and /health/ready on this port")
+        if kind == "scheduler":
+            sp.add_argument("--tick-seconds", default="30")
+        sp.set_defaults(func=_process(kind))
+    mg = sub.add_parser("migrate", help="apply database migrations (CC_DATABASE_URL)")
+    mg.set_defaults(func=_migrate)
+    oa = sub.add_parser("openapi", help="print the OpenAPI document")
+    oa.set_defaults(func=_openapi)
 
     pr = sub.add_parser("prompt", help="render an agent system prompt preview")
     pr.add_argument("agent_id")

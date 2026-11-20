@@ -130,6 +130,17 @@ briefing:
       procurement: PURCHASE_ACTIVITY
       people_performance: PEOPLE_AUTHORIZED
 
+# API abuse controls (in front of budgets; budgets still apply to every run).
+rate_limits:
+  commands_per_user_per_minute: 6
+  commands_per_org_per_hour: 200
+  runs_per_org_per_hour: 300
+  approvals_per_user_per_minute: 20
+  api_requests_per_user_per_minute: 300
+
+# KPI targets (version controlled with this file). KPI definitions live in agent profiles.
+kpi_targets: {}
+
 attachments:
   allowed_mime_types: [application/pdf, text/plain, text/csv, text/markdown, image/png, image/jpeg]
   max_size_bytes: 20000000

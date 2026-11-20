@@ -195,6 +195,13 @@ class OrganizationPolicy:
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
     external_adapters: Mapping[str, Any] = field(default_factory=dict)     # tool -> AdapterSetting (all off)
     briefing: BriefingPolicy = field(default_factory=BriefingPolicy)
+    rate_limits: Any = None                                                 # ratelimit.RateLimitPolicy
+    kpi_targets: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)   # kpi -> {target, unit?}
+
+    def __post_init__(self) -> None:
+        if self.rate_limits is None:
+            from .ratelimit import RateLimitPolicy
+            object.__setattr__(self, "rate_limits", RateLimitPolicy())
 
     def privacy_gate_open(self, tool_name: str) -> bool:
         gate = self.privacy_gates.get(tool_name)
@@ -280,6 +287,8 @@ class OrganizationPolicy:
                 raw=dict(raw),
                 external_adapters=_adapters(raw.get("external_adapters")),
                 briefing=_briefing(raw.get("briefing")),
+                rate_limits=_rate_limits(raw.get("rate_limits")),
+                kpi_targets=_kpi_targets(raw.get("kpi_targets")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             if isinstance(exc, ConfigurationError):
@@ -329,6 +338,23 @@ def resolve_dotted(raw: Any, path: str) -> Any:
         else:
             return _MISSING
     return node
+
+
+def _rate_limits(raw: Mapping[str, Any] | None) -> Any:
+    from .ratelimit import RateLimitPolicy
+    try:
+        return RateLimitPolicy.from_mapping(raw)
+    except (ValueError, TypeError) as exc:
+        raise ConfigurationError(str(exc)) from None
+
+
+def _kpi_targets(raw: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    out = {}
+    for kpi, cfg in (raw or {}).items():
+        if not isinstance(cfg, Mapping) or "target" not in cfg:
+            raise ConfigurationError(f"kpi_targets.{kpi} needs a target")
+        out[kpi] = {"target": Decimal(str(cfg["target"])), "unit": cfg.get("unit"), "owner": cfg.get("owner")}
+    return out
 
 
 def _adapters(raw: Mapping[str, Any] | None) -> dict[str, Any]:

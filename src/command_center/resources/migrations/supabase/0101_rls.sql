@@ -70,7 +70,7 @@ BEGIN
     'task_dependencies','task_events','approvals','approval_events','outputs','output_versions','evaluations',
     'recommendations','recommendation_events','change_requests','kpis','kpi_snapshots','kpi_outcomes','memories',
     'memory_events','delegations','workflows','workflow_steps','workflow_runs','scheduled_runs','alerts',
-    'notifications','ai_usage','knowledge_documents']
+    'notifications','ai_usage','knowledge_documents','conversations','conversation_participants','messages']
   LOOP
     EXECUTE format('GRANT SELECT ON %I TO authenticated', t);
     EXECUTE format('CREATE POLICY %I ON %I FOR SELECT TO authenticated USING (app.is_member(organization_id))',
@@ -96,4 +96,6 @@ CREATE POLICY audit_read ON audit_events FOR SELECT TO authenticated
   USING (app.has_permission(organization_id, 'audit:read'));
 
 -- Not exposed to clients at all: sources, idempotency_keys, attachments (served via signed
--- URLs by the backend), schema_migrations.
+-- URLs by the backend), schema_migrations, jobs, connector_status, rate_limit_counters,
+-- process_heartbeats. (RLS is enabled on them by the loop above and no policy grants access.)
+-- Apply this file AFTER all core migrations (0001, 0002, 0003) so every table is covered.

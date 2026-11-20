@@ -51,6 +51,15 @@ SUPPORTED_ENV_OVERRIDES = {
     "CC_CONFIG_DIR": "directory containing agents/, organization_policy.yaml, models.yaml",
     "CC_DATABASE_URL": "PostgreSQL connection string (secret; never printed)",
     "CC_DEFAULT_MODEL_PROFILE": "overrides models.yaml default_profile (must name an existing profile)",
+    "CC_SUPABASE_URL": "Supabase project URL (JWT issuer <url>/auth/v1, JWKS location)",
+    "CC_SUPABASE_JWT_SECRET": "legacy HS256 JWT secret (secret; never printed)",
+    "CC_SUPABASE_JWKS_URL": "override for the JWKS URL (asymmetric signing keys)",
+    "CC_JWT_AUDIENCE": "expected JWT audience (default 'authenticated')",
+    "CC_API_HOST": "API bind address for `ai-command-center serve`",
+    "CC_API_PORT": "API port for `ai-command-center serve`",
+    "CC_CORS_ORIGINS": "comma-separated allowed browser origins (e.g. the Lovable app URL)",
+    "CC_LOG_LEVEL": "log level for API/worker/scheduler (INFO, DEBUG, ...)",
+    "CC_SCHEDULER_USER_ID": "user id of the scheduler service account (its roles come from organization membership)",
 }
 
 # Placeholder paths under these prefixes are security-critical or financial.
@@ -360,6 +369,7 @@ def _collect(config_dir: "str | Path | Resource | None", environment: "str | Env
                 if mode is Environment.PRODUCTION and used and not env.get(prov.api_key_env):
                     report.errors.append(f"provider {prov.name}: credential {prov.api_key_env} is not set")
     report.credentials["CC_DATABASE_URL"] = "set" if env.get("CC_DATABASE_URL") else "not set"
+    report.credentials["CC_SUPABASE_JWT_SECRET"] = "set" if env.get("CC_SUPABASE_JWT_SECRET") else "not set"
 
     # --- production placeholder gate ------------------------------------------------------
     if mode is Environment.PRODUCTION:

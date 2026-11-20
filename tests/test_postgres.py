@@ -51,7 +51,7 @@ def dsn():
 @pytest.fixture(scope="module")
 def db(dsn):
     d = Database(dsn)
-    assert apply_migrations(d) == ["0001_core.sql", "0002_operations.sql"]
+    assert apply_migrations(d) == ["0001_core.sql", "0002_operations.sql", "0003_api.sql"]
     assert apply_migrations(d) == []                    # idempotent
     yield d
     d.close()

@@ -356,9 +356,57 @@ Every step writes an append-only, hash-chained audit event.
   reads stay UNAVAILABLE.
 - **External adapters.** No real adapters exist; external writes are disabled or mocked. Each real adapter
   needs a provider integration, credential handling through the environment, and a review.
-- **Authentication.** There is no authenticated HTTP/RPC surface yet. `ApiService` expects the caller to
-  pass an authenticated `Principal`.
-- **Worker process.** No long-running worker or scheduler process is packaged. `JobWorker.run_once` and
-  `Scheduler.tick` must be driven by a deployment process manager.
+- ~~Authentication~~ and ~~worker process~~: resolved in Phase 5.
 - **Cross-organization queries.** Queue claims are cross-organization by design (infrastructure). Per-tenant
   worker pools, if needed, filter by job type or organization.
+
+## Phase 5: frontend integration layer
+
+```
+Browser (Lovable) ── Supabase Auth JWT ──► AsgiApp (asgi.py: CORS, body limit, security headers, SSE)
+                                              │
+                                              ▼
+                                   HttpApi.handle (http_api.py)
+          TokenVerifier (auth.py) → MembershipDirectory (server-side roles/permissions) → Principal
+          rate limits (ratelimit.py: api | command | approval, per user and per org)
+          strict body schemas (unknown fields and client-supplied authority rejected)
+                                              │
+                                              ▼
+                ApiService (api.py) ─► existing domain services (permissions, approvals, gateway, audit)
+                                              │
+        CommandService ─► durable queue ─► `worker` ─► AgentRuntime         `scheduler` (leader lock)
+                                              │
+                         audit log (per-org sequence) ─► /v1/events, /v1/events/stream
+```
+
+- **Identity.** Identity is only `sub` from a verified JWT. The issuer, audience, expiry and the
+  `authenticated` role are required, the algorithm is allow-listed, and `none` is refused. The
+  organization, roles and permissions are loaded from `organization_members` / `member_roles` /
+  `permissions`. Claims such as `app_metadata.roles` are ignored. A body that contains `organization_id`,
+  `roles`, `permissions`, `approved_by` or similar is rejected with 422 `CLIENT_SUPPLIED_AUTHORITY`. A user
+  with several memberships selects one with `X-Organization`, and the server accepts it only for an existing
+  membership.
+- **Authorization.** Authorization is enforced by the domain services, the same code paths and checks as
+  before. RLS is defense in depth, not the only control.
+- **Commands.** `POST /v1/commands` persists the human message, creates a QUEUED run and enqueues an
+  `agent_run` job. It returns `command_id` and `run_id` without waiting. A rate limit is checked before
+  anything is created, and the existing budget and run limits still apply in the worker.
+- **Approvals.** A decision must echo the reviewed `payload_hash`, or the API returns 409
+  `PAYLOAD_MISMATCH`. The approver is the JWT user, and the role is checked server-side by the approval
+  engine. Reconciliation of `OUTCOME_UNKNOWN` needs evidence and never re-executes. Re-execution is a
+  separate, explicit request that creates a new approval.
+- **Realtime.** Realtime events are the org-scoped audit stream, mapped to frontend event names, with an
+  allow-listed summary. The cursor is the audit sequence.
+- **Errors.** Every response is `{data, meta, error}`. A 500 says only `internal error` plus a
+  `request_id`, with no exception text.
+- **Processes.** See `docs/deployment.md`.
+
+### Remaining production blockers (Phase 5)
+
+- Not verified against a real Supabase project: JWKS signing keys, RLS in Supabase, connection pooling.
+- No membership management API: provisioning is a privileged backend step (`add_member`).
+- Attachments: `attachment_ids` are resolved against the gated `AttachmentStore` (type, size, scan and
+  classification checks). There is no upload endpoint and no persistent or Supabase Storage backing, so in
+  practice any id returns 404 until one is built.
+- Rate-limit counters are fixed-window. There is no global (cross-organization) limit.
+- The Phase 4 blockers still apply: configuration review, connector views and real adapters.

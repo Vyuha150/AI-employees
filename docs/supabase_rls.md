@@ -61,10 +61,10 @@ role and write the audit trail.
 
 ## Realtime
 
-Subscribe browsers to the backend's realtime channel (`command_center.realtime`), not to raw table changes.
-Realtime payloads carry an allow-listed `payload_summary` only: no prompts, tool parameters or model text.
-If Supabase Realtime is used directly, enable it only on tables whose RLS read policy is acceptable to
-stream, and never on `audit_events` without the `audit:read` check.
+Browsers subscribe to the backend's SSE stream (`GET /v1/events/stream`, see `docs/deployment.md`), not to
+raw table changes. Realtime payloads carry an allow-listed `payload_summary` only: no prompts, tool
+parameters or model text. Supabase Realtime is not used. If you enable it anyway, enable it only on tables
+whose RLS read policy is acceptable to stream, and never on `audit_events`, `jobs` or `rate_limit_counters`.
 
 ## Verification
 
@@ -75,11 +75,12 @@ server, with a stub `auth.uid()` that reads `request.jwt.claim.sub`, as Supabase
 - the member cannot update approvals;
 - the member cannot grant permissions.
 
-Run it with `CC_TEST_DATABASE_URL` pointing at an admin DSN.
+Run it with `CC_TEST_DATABASE_URL` pointing at an admin DSN. **These policies have not yet been applied to a
+real Supabase project.** `docs/deployment.md` lists the steps for doing that and checking the result.
 
 ## Deployment checklist
 
-- [ ] Core migration applied; `0101_rls.sql` applied after it.
+- [ ] Core migrations `0001`–`0003` applied (`ai-command-center migrate`); `0101_rls.sql` applied after them.
 - [ ] The backend connects with a server-side role. The service-role key is only in server environment
       variables, never in `NEXT_PUBLIC_*` or similar client-exposed variables.
 - [ ] `organization_members.user_id` rows exist for every user. Membership changes run through the

@@ -299,5 +299,12 @@ def agent_run_handler(tenants: Any) -> Callable[[Job], str | None]:
                          requested_agent_id=run.agent_id)
         explicit = [ExplicitContext(e["item_id"], e["title"], e["text"]) for e in p.get("explicit", [])]
         result = cc.runtime.execute(run.run_id, ctx, message=p["message"], explicit=explicit)
+        if result.output_id and p.get("conversation_id") and cc.conversations is not None:
+            out = cc.outputs.get(result.output_id)
+            if out.validity.value == "VALID" and out.kind.value == "STRUCTURED_RESPONSE":
+                from .common import ActorType
+                cc.conversations.add_message(p["conversation_id"], sender_type=ActorType.AGENT, sender_id=run.agent_id,
+                                             agent_id=run.agent_id, content=out.content.get("executive_summary", ""),
+                                             structured_content={"output_id": out.output_id}, run_id=run.run_id)
         return result.output_id or run.run_id
     return handle
