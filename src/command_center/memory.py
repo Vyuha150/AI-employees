@@ -147,6 +147,17 @@ class MemoryService:
             out.append(updated)
         return out
 
+    def review_due(self, memories: Iterable[Memory]) -> list[Memory]:
+        """Accepted memories past review_at are flagged for human review (never deleted)."""
+        now = self.clock()
+        due = [m for m in memories if m.review_at is not None and m.review_at <= now]
+        for m in due:
+            self.audit.record(EventType.MEMORY_REVIEW_DUE, organization_id=m.organization_id,
+                              actor_type=ActorType.SYSTEM, actor_id="system", agent_id=m.proposed_by_agent,
+                              object_type="memory", object_id=m.memory_id,
+                              payload={"review_at": m.review_at.isoformat()})
+        return due
+
     def context_for(self, agent: AgentProfile, organization_id: str, *, customer_ids: Iterable[str] = (),
                     project_ids: Iterable[str] = ()) -> list[Memory]:
         """Durable context for a run: ACCEPTED, unexpired, in the agent's scopes only."""

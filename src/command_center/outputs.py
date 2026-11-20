@@ -28,6 +28,12 @@ class OutputValidity(StrEnum):
     INVALID = "INVALID"
 
 
+class OutputKind(StrEnum):
+    STRUCTURED_RESPONSE = "STRUCTURED_RESPONSE"   # §25 contract; may be ingested
+    DAILY_BRIEF = "DAILY_BRIEF"                   # report document; never ingested
+    WEEKLY_REVIEW = "WEEKLY_REVIEW"               # report document; never ingested
+
+
 @dataclass(frozen=True)
 class AgentOutput:
     output_id: str
@@ -44,6 +50,7 @@ class AgentOutput:
     ingested: bool = False
     evaluations: tuple[OutputEvaluation, ...] = ()
     review_decision: ReviewDecision | None = None
+    kind: OutputKind = OutputKind.STRUCTURED_RESPONSE
     version: int = 0
 
     @property
@@ -57,13 +64,32 @@ class OutputService:
     audit: AuditLogger
     repo: Repository[AgentOutput] = field(default_factory=lambda: InMemoryRepository("output_id"))
     clock: Clock = utc_now
+    evaluation_repo: Any = None     # optional append-only store (PostgreSQL `evaluations` table)
 
     def get(self, output_id: str) -> AgentOutput:
         return self.repo.get(output_id)
 
-    def record(self, run: AgentRun, response: Mapping[str, Any]) -> AgentOutput:
+    def record(self, run: AgentRun, response: Mapping[str, Any], *, extra_errors: tuple[str, ...] = (),
+               extra_warnings: tuple[str, ...] = (),
+               kind: OutputKind = OutputKind.STRUCTURED_RESPONSE) -> AgentOutput:
+        """extra_errors: application checks beyond the schema (e.g. provenance). They make the
+        output INVALID; they can never make an invalid output valid."""
         agent = self.registry.get_agent(run.agent_id)
-        result = validate_response(response, agent.allowed_tools, expected_agent_id=agent.agent_id)
+        known = [p.agent_id for p in self.registry.list_agents(include_disabled=True)]
+        if kind is OutputKind.DAILY_BRIEF:
+            from .briefs import validate_daily_brief
+            result = validate_daily_brief(response, known, require_data_quality=True)
+            if not result.errors and response.get("agent_id") != agent.agent_id:
+                result.errors.append("brief agent_id does not match the run's agent")
+        elif kind is OutputKind.WEEKLY_REVIEW:
+            from .briefs import validate_weekly_review
+            result = validate_weekly_review(response, known_agents=known)
+            if not result.errors and response.get("generated_by_agent") != agent.agent_id:
+                result.errors.append("review generated_by_agent does not match the run's agent")
+        else:
+            result = validate_response(response, agent.allowed_tools, expected_agent_id=agent.agent_id)
+        result.errors.extend(extra_errors)
+        result.warnings.extend(extra_warnings)
         try:
             content_json = canonical_json(response)
         except ValueError as exc:
@@ -75,7 +101,7 @@ class OutputService:
                           content_json=content_json, content_hash=canonical_hash(content_json),
                           validity=OutputValidity.VALID if result.ok else OutputValidity.INVALID,
                           validation_errors=tuple(result.errors), validation_warnings=tuple(result.warnings),
-                          created_at=self.clock())
+                          created_at=self.clock(), kind=kind)
         self.repo.add(out)
         self.audit.record(EventType.OUTPUT_CREATED, organization_id=run.organization_id, actor_type=ActorType.AGENT,
                           actor_id=run.agent_id, agent_id=run.agent_id, run_id=run.run_id, object_type="output",
@@ -88,6 +114,8 @@ class OutputService:
         out = self.repo.get(output_id)
         if out.validity is not OutputValidity.VALID:
             raise PolicyViolationError("invalid outputs cannot be ingested")
+        if out.kind is not OutputKind.STRUCTURED_RESPONSE:
+            raise PolicyViolationError(f"{out.kind.value} outputs are reports and are not ingested")
         if out.ingested:
             raise PolicyViolationError("output already ingested")
         return self.repo.update(replace(out, ingested=True), expected_version=out.version)
@@ -100,6 +128,8 @@ class OutputService:
             raise PermissionDeniedError("different organization")
         updated = self.repo.update(replace(out, evaluations=out.evaluations + (evaluation,),
                                            review_decision=evaluation.decision), expected_version=out.version)
+        if self.evaluation_repo is not None:
+            self.evaluation_repo.add(evaluation)
         self.audit.record(EventType.OUTPUT_REVIEWED, organization_id=out.organization_id, actor_type=ActorType.HUMAN,
                           actor_id=reviewer.principal_id, agent_id=out.agent_id, run_id=out.run_id,
                           object_type="output", object_id=out.output_id,

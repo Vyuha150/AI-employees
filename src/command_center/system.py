@@ -6,11 +6,19 @@ PostgreSQL-backed repositories and audit store) and calls these methods from its
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agents import DEFAULT_AGENT_DIR, AgentRegistry
+from .alerts import AlertService
+from .escalations import EscalationEngine
+from .idempotency import InMemoryIdempotencyStore
+from .knowledge import KeywordRetriever, KnowledgeService
+from .kpis import KpiService
+from .read_tools import KnowledgeReadConnector, KpiReadConnector, ReadToolService, TaskReadConnector
+from .usage import UsageService
 from .approvals import Approval, ApprovalEngine
 from .audit import AuditLogger, AuditStore, InMemoryAuditStore
 from .common import Clock, Principal, utc_now
@@ -61,6 +69,34 @@ class CommandCenter:
     external_executor: ToolExecutor
     internal_executor: InternalToolExecutor
     clock: Clock = field(default=utc_now)
+    alerts: AlertService | None = None
+    kpis: KpiService | None = None
+    knowledge: KnowledgeService | None = None
+    usage: UsageService | None = None
+    escalations: EscalationEngine | None = None
+    idempotency: Any = None
+    read_tools: ReadToolService | None = None
+    runtime: Any = None
+    models: Any = None
+    sources_repo: Any = None
+    repositories: Any = None
+
+    def workflow_engine(self) -> Any:
+        from .workflows import WorkflowEngine
+        r = self.repositories
+        kw = {}
+        if r is not None and getattr(r, "workflows", None) is not None:
+            kw = {"definitions": r.workflows, "runs": r.workflow_runs}
+        return WorkflowEngine(self, self.runtime, **kw)
+
+    def scheduler(self, dispatcher: Any, **kw: Any) -> Any:
+        from .scheduler import Scheduler
+        r = self.repositories
+        if r is not None and getattr(r, "scheduled_jobs", None) is not None:
+            kw.setdefault("jobs", r.scheduled_jobs)
+            kw.setdefault("runs", r.scheduled_runs)
+        return Scheduler(self.policy, self.registry, self.audit, dispatcher, idempotency=self.idempotency,
+                         clock=self.clock, **kw)
 
     @classmethod
     def build(
@@ -75,23 +111,87 @@ class CommandCenter:
         data_provider: DataProvider | None = None,
         clock: Clock = utc_now,
         tools: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+        sleep: Callable[[float], None] = time.sleep,
+        models: Any = None,
+        providers: Any = None,
+        read_connectors: Mapping[str, Any] | None = None,
+        enforce_budgets: bool = True,
+        repositories: Any = None,
     ) -> "CommandCenter":
-        registry = registry or AgentRegistry.load_dir(agent_dir, tools)
+        """repositories: optional object with attributes named like the services' repos
+        (runs, tasks, approvals, outputs, recommendations, changes, memories, delegations, alerts,
+        notifications, kpis, usage) to back the services with e.g. PostgreSQL."""
         policy = policy or OrganizationPolicy.load(policy_path, tools)
-        audit = AuditLogger(audit_store or InMemoryAuditStore(), clock)
-        runs = RunService(registry, audit, clock=clock)
-        tasks = TaskService(audit, clock=clock)
-        approvals = ApprovalEngine(policy, audit, clock=clock)
-        internal = InternalToolExecutor(tasks, audit, clock)
+        if registry is None:
+            registry = AgentRegistry.load_dir(agent_dir, tools)
+        if policy.privacy_gate_open("read_people_summary") and not tools.exists("read_people_summary"):
+            tools = tools.with_proposed("read_people_summary")
+        repo = (lambda name: getattr(repositories, name, None)) if repositories is not None else (lambda name: None)
+
+        def opt(**kw):  # pass a repository only when provided
+            return {k: v for k, v in kw.items() if v is not None}
+
+        audit = AuditLogger(audit_store or repo("audit") or InMemoryAuditStore(), clock)
+        runs = RunService(registry, audit, clock=clock, **opt(repo=repo("runs")))
+        tasks = TaskService(audit, clock=clock, **opt(repo=repo("tasks")))
+        approvals = ApprovalEngine(policy, audit, clock=clock, **opt(repo=repo("approvals")))
+        alerts = AlertService(audit, clock=clock, **opt(repo=repo("alerts"), notifications=repo("notifications")))
+        kpis = KpiService(audit, clock=clock, **opt(repo=repo("kpis")))
+        knowledge = KnowledgeService(policy.organization_id, audit, clock=clock,
+                                     **opt(documents=repo("knowledge_documents"), chunks=repo("knowledge_chunks")))
+        usage = UsageService(policy, audit, clock=clock, **opt(repo=repo("usage")))
+        if enforce_budgets:
+            runs.budget_guard = usage.check_can_start
+        internal = InternalToolExecutor(tasks, audit, clock, alerts=alerts, kpis=kpis)
         external = external_executor or MockExternalExecutor()
-        executor = CompositeExecutor(tools, internal, external, data_provider)
-        gateway = ActionGateway(registry, tools, policy, runs, approvals, executor, audit)
-        return cls(registry=registry, policy=policy, tools=tools, audit=audit, runs=runs, tasks=tasks,
-                   approvals=approvals, gateway=gateway, outputs=OutputService(registry, audit, clock=clock),
-                   recommendations=RecommendationService(audit, clock=clock),
-                   memory=MemoryService(audit, clock=clock),
-                   orchestration=OrchestrationService(registry, runs, audit, policy.orchestration, clock=clock),
-                   external_executor=external, internal_executor=internal, clock=clock)
+        outputs = OutputService(registry, audit, clock=clock, evaluation_repo=repo("evaluations"),
+                                **opt(repo=repo("outputs")))
+        connectors: dict[str, Any] = {
+            "read_kpis": KpiReadConnector(kpis, clock=clock),
+            "read_tasks": TaskReadConnector(tasks, clock=clock),
+        }
+        retriever = KeywordRetriever(knowledge)
+        scopes = lambda aid: registry.get_profile(aid).knowledge_scopes
+        connectors["read_knowledge"] = KnowledgeReadConnector(retriever, scopes, clock=clock)
+        connectors["search_company_data"] = KnowledgeReadConnector(retriever, scopes, clock=clock)
+        if read_connectors is None and repositories is not None and getattr(repositories, "db", None) is not None:
+            from .pg.read_connectors import pg_read_connectors   # PostgreSQL deployments only
+            read_connectors = pg_read_connectors(repositories.db, repositories.org_uuid, scopes, clock)
+            read_connectors.pop("read_knowledge", None)          # domain knowledge service already reads PG
+            read_connectors.pop("search_company_data", None)
+        connectors.update(read_connectors or {})
+        read_tools = ReadToolService(connectors)
+        executor = CompositeExecutor(tools, internal, external, data_provider, read_tools)
+        gateway = ActionGateway(registry, tools, policy, runs, approvals, executor, audit, sleep=sleep)
+        memory = MemoryService(audit, clock=clock, **opt(repo=repo("memories")))
+        idem = repo("idempotency") or InMemoryIdempotencyStore(clock)
+        if repo("agents") is not None:
+            repo("agents").sync(registry)
+        escalations = EscalationEngine(policy, audit, alerts, tasks, approvals, kpis, idem, clock)
+        gateway.on_execution_unknown = escalations.on_execution_unknown
+        cc = cls(registry=registry, policy=policy, tools=tools, audit=audit, runs=runs, tasks=tasks,
+                 approvals=approvals, gateway=gateway, outputs=outputs,
+                 recommendations=RecommendationService(audit, clock=clock, **opt(repo=repo("recommendations"),
+                                                                                  changes=repo("changes"))),
+                 memory=memory,
+                 orchestration=OrchestrationService(registry, runs, audit, policy.orchestration, clock=clock,
+                                                    **opt(repo=repo("delegations"))),
+                 external_executor=external, internal_executor=internal, clock=clock, alerts=alerts, kpis=kpis,
+                 knowledge=knowledge, usage=usage, escalations=escalations, idempotency=idem, read_tools=read_tools,
+                 models=models, sources_repo=repo("sources"), repositories=repositories)
+        if models is not None and providers is not None:
+            from .context import ContextAssembler
+            from .runtime import AgentRuntime
+            assembler = ContextAssembler(policy, audit, memory=memory, retriever=retriever, kpis=kpis,
+                                         outputs=outputs, clock=clock)
+            cc.runtime = AgentRuntime(cc, models, providers, assembler, usage, sleep=sleep)
+        return cc
+
+    @classmethod
+    def from_config(cls, config: Any, *, providers: Any = None, **kw: Any) -> "CommandCenter":
+        """Build from a validated config.AppConfig (the production entry point)."""
+        return cls.build(policy=config.policy, registry=config.registry, tools=config.tools, models=config.models,
+                         providers=providers, **kw)
 
     # -- output ingestion --------------------------------------------------------------
     def ingest_output(self, output_id: str) -> IngestionReport:
@@ -104,6 +204,8 @@ class CommandCenter:
         approval_requests in the response are advisory; real approvals come from policy.
         """
         out: AgentOutput = self.outputs.get(output_id)
+        if out.kind.value != "STRUCTURED_RESPONSE":
+            raise PolicyViolationError(f"{out.kind.value} outputs are reports and are not ingested")
         if out.validity is not OutputValidity.VALID:
             raise PolicyViolationError("invalid outputs cannot be ingested: " + "; ".join(out.validation_errors))
         run = self.runs.get(out.run_id)

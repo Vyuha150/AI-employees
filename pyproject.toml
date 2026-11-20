@@ -1,23 +1,35 @@
 [project]
 name = "ai-command-center"
-version = "0.2.0"
-description = "Operating principles, response contracts and governance checks for the AI Business Command Center agent workforce."
+version = "0.3.0"
+description = "Governed AI workforce layer for the AI Business Command Center: agents, risk policy, approvals, audit, runtime, scheduler and persistence."
 requires-python = ">=3.10"
 dependencies = ["jsonschema>=4.18", "pyyaml>=6"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+postgres = ["psycopg[binary]>=3.1"]
+claude = ["anthropic>=2.0"]
+dev = ["pytest>=7", "psycopg[binary]>=3.1", "anthropic>=2.0"]
 
 [project.scripts]
+ai-command-center = "command_center.cli:main"
 build-agent-prompt = "command_center.prompt:main"
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Prompts, schemas, default configuration and SQL migrations ship inside the package and are
+# read with importlib.resources, so nothing depends on the working directory or a checkout.
+command_center = ["resources/**/*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "postgres: needs a PostgreSQL server (set CC_TEST_DATABASE_URL to an admin DSN)",
+    "packaging: builds and installs the wheel into a temporary virtualenv",
+]

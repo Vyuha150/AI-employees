@@ -10,15 +10,15 @@ never an execution (§30).
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from jsonschema import Draft202012Validator
 
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "structured_response.schema.json"
-_VALIDATOR = Draft202012Validator(json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
+from .resources import load_json_schema
+
+STRUCTURED_RESPONSE_SCHEMA = load_json_schema("structured_response.schema.json")
+_VALIDATOR = Draft202012Validator(STRUCTURED_RESPONSE_SCHEMA)
 
 
 @dataclass

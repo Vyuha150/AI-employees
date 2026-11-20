@@ -1,0 +1,36 @@
+# Model configuration. Business logic never names a model: agents reference a model_profile.
+# Secrets are never stored here; `api_key_env` names the environment variable to read.
+default_profile: standard
+
+providers:
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 600
+    sdk_max_retries: 0        # the runtime's MODEL_RETRY policy owns retries (counted and audited)
+  mock: {}
+
+model_profiles:
+  standard: {provider: anthropic, model: claude-opus-5-5, max_tokens: 16000, effort: medium}
+  deep:     {provider: anthropic, model: claude-opus-5-5, max_tokens: 16000, effort: high}
+  test:     {provider: mock, model: mock-model, max_tokens: 4000, effort: low}
+
+# Fallback is OFF. When enabled, each switch is audited and recorded on the run.
+fallback:
+  allowed: false
+  chains: {}                       # e.g. {standard: [{provider: anthropic, model: claude-sonnet-5-5}]}
+  server_side_refusal_fallback: false
+
+# The structured-response schema has free-form `parameters` objects, which native JSON-schema
+# output does not support (additionalProperties must be false everywhere). The runtime
+# therefore asks for JSON in text and validates it in code.
+structured_output:
+  native_json_schema: false
+
+# Provider pricing per million tokens. If a model is missing here, cost is stored as NULL
+# with an explanation; it is never estimated.
+pricing:
+  anthropic:
+    claude-opus-5-5:   {input_per_mtok: 4.00, output_per_mtok: 20.00, cache_read_per_mtok: 0.20, cache_write_per_mtok: 5.00, currency: USD, as_of: "2026-11-03"}
+    claude-sonnet-5-5: {input_per_mtok: 2.00, output_per_mtok: 10.00, cache_read_per_mtok: 0.10, cache_write_per_mtok: 2.50, currency: USD, as_of: "2026-11-03"}
+  mock:
+    mock-model:        {input_per_mtok: 0, output_per_mtok: 0, cache_read_per_mtok: 0, cache_write_per_mtok: 0, currency: USD, as_of: "n/a"}

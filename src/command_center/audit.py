@@ -44,6 +44,8 @@ class EventType(StrEnum):
     TOOL_EXECUTED = "tool.executed"
     TOOL_FAILED = "tool.failed"
     TOOL_DENIED = "tool.denied"
+    TOOL_EXECUTION_UNKNOWN = "tool.execution_unknown"
+    TOOL_RETRIED = "tool.retried"
 
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_APPROVED = "approval.approved"
@@ -53,6 +55,8 @@ class EventType(StrEnum):
     APPROVAL_EXECUTION_STARTED = "approval.execution_started"
     APPROVAL_EXECUTED = "approval.executed"
     APPROVAL_EXECUTION_FAILED = "approval.execution_failed"
+    APPROVAL_EXECUTION_UNKNOWN = "approval.execution_unknown"
+    APPROVAL_RECONCILED = "approval.reconciled"
 
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
@@ -79,6 +83,32 @@ class EventType(StrEnum):
     DELEGATION_UPDATED = "delegation.updated"
 
     ALERT_CREATED = "alert.created"
+    ALERT_ACKNOWLEDGED = "alert.acknowledged"
+    ALERT_RESOLVED = "alert.resolved"
+    ALERT_DISMISSED = "alert.dismissed"
+    NOTIFICATION_CREATED = "notification.created"
+    ESCALATION_TRIGGERED = "escalation.triggered"
+    KPI_OBSERVATION_RECORDED = "kpi.observation_recorded"
+    MEMORY_REVIEW_DUE = "memory.review_due"
+    BUDGET_WARNING = "budget.warning"
+    BUDGET_EXCEEDED = "budget.exceeded"
+    BUDGET_OVERRIDE_GRANTED = "budget.override_granted"
+    MODEL_CALLED = "model.called"
+    MODEL_FAILED = "model.failed"
+    MODEL_FALLBACK_USED = "model.fallback_used"
+    USAGE_RECORDED = "usage.recorded"
+    SCHEDULE_TRIGGERED = "schedule.triggered"
+    SCHEDULE_SKIPPED = "schedule.skipped"
+    WORKFLOW_STARTED = "workflow.started"
+    WORKFLOW_STEP = "workflow.step"
+    WORKFLOW_COMPLETED = "workflow.completed"
+    WORKFLOW_FAILED = "workflow.failed"
+    WORKFLOW_WAITING = "workflow.waiting"
+    WORKFLOW_DEFINITION_CHANGED = "workflow.definition_changed"
+    COMMAND_RECEIVED = "command.received"
+    ATTACHMENT_REJECTED = "attachment.rejected"
+    KNOWLEDGE_INGESTED = "knowledge.ingested"
+    CONTEXT_ASSEMBLED = "context.assembled"
     CONFIGURATION_CHANGED = "configuration.changed"
     RISK_OVERRIDDEN_BY_POLICY = "risk.overridden_by_policy"
     RISK_DECLARED_HIGHER_THAN_POLICY = "risk.declared_higher_than_policy"
@@ -271,6 +301,9 @@ class AuditLogger:
     def __init__(self, store: AuditStore, clock: Clock = utc_now):
         self.store = store
         self.clock = clock
+        # Called with each sealed event after it is appended (e.g. the realtime bus). A failing
+        # listener never affects the audit write or the business operation.
+        self.listeners: list[Any] = []
 
     def record(
         self,
@@ -294,7 +327,7 @@ class AuditLogger:
                 return str(v.value)
             return str(v)
 
-        return self.store.append(AuditEvent(
+        sealed = self.store.append(AuditEvent(
             event_id=new_id("evt"),
             timestamp=self.clock(),
             organization_id=organization_id,
@@ -309,3 +342,9 @@ class AuditLogger:
             previous_state=state(previous_state),
             new_state=state(new_state),
         ))
+        for listener in list(self.listeners):
+            try:
+                listener(sealed)
+            except Exception:
+                pass
+        return sealed

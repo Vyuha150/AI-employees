@@ -16,22 +16,24 @@ Nothing here reports success unless the executor returned success.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agents import AgentProfile, AgentRegistry
 from .approvals import Approval, ApprovalEngine
 from .audit import AuditLogger, EventType
-from .common import ActorType, RiskClass, StrEnum
+from .common import ActorType, RiskClass, StrEnum, new_id
 from .errors import CommandCenterError, UnknownToolError
-from .executors import ToolExecutor, ToolInvocation, ToolResult
+from .executors import ToolExecutor, ToolInvocation, ToolResult, ToolStatus
+from .retries import RetryClass, run_with_retries, write_retry_allowed
 from .policy import OrganizationPolicy
 from .risk import RiskAssessment, RiskContext, classify_action, requires_approval
 from .runs import RunService
 from .state_machines import ApprovalStatus, RunStatus
-from .tools import ToolRegistry
+from .tools import PROPOSED_TOOLS, ToolCategory, ToolRegistry
 
 
 class ActionStatus(StrEnum):
@@ -39,6 +41,7 @@ class ActionStatus(StrEnum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     EXECUTED = "EXECUTED"
     FAILED = "FAILED"
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,8 @@ class ActionGateway:
     executor: ToolExecutor
     audit: AuditLogger
     aggregation_window: timedelta = field(default=timedelta(hours=24))
+    sleep: Callable[[float], None] = time.sleep
+    on_execution_unknown: Callable[[Approval, ToolResult], None] | None = None
 
     # ---------------------------------------------------------------------------------
     def _deny(self, run, tool_name: str, reason: str) -> ActionOutcome:
@@ -73,8 +78,13 @@ class ActionGateway:
         return ActionOutcome(ActionStatus.DENIED, tool_name, reason)
 
     def _permission_problem(self, agent: AgentProfile, tool_name: str) -> str | None:
+        if tool_name in PROPOSED_TOOLS and not self.tools.exists(tool_name):
+            return (f"tool {tool_name!r} is privacy-gated and not enabled; data unavailable "
+                    "until a privacy review approves it")
         if not self.tools.exists(tool_name):
             return f"unknown tool {tool_name!r}"
+        if tool_name in PROPOSED_TOOLS and not self.policy.privacy_gate_open(tool_name):
+            return f"tool {tool_name!r} privacy gate is not approved; data unavailable"
         if tool_name in agent.prohibited_actions:
             return f"tool {tool_name!r} is prohibited for {agent.agent_id}"
         if tool_name not in agent.allowed_tools:
@@ -98,18 +108,52 @@ class ActionGateway:
         return total
 
     def _record_result(self, inv: ToolInvocation, result: ToolResult, risk: RiskClass) -> None:
-        self.audit.record(EventType.TOOL_EXECUTED if result.success else EventType.TOOL_FAILED,
+        if result.status is ToolStatus.EXECUTION_UNKNOWN:
+            event = EventType.TOOL_EXECUTION_UNKNOWN
+        else:
+            event = EventType.TOOL_EXECUTED if result.success else EventType.TOOL_FAILED
+        self.audit.record(event,
                           organization_id=inv.organization_id, actor_type=ActorType.AGENT, actor_id=inv.agent_id,
                           agent_id=inv.agent_id, run_id=inv.run_id, object_type="tool", object_id=inv.tool_name,
                           payload={"action_type": inv.action_type, "risk_class": risk.value,
                                    "approval_id": inv.approval_id, "result_ref": result.result_ref,
-                                   "error": result.error, "mock": bool(result.data and result.data.get("mock"))})
+                                   "tool_call_id": inv.tool_call_id, "execution_id": inv.execution_id,
+                                   "status": result.status.value, "error": result.error, "mock": result.mock,
+                                   "source_ids": list(result.source_ids)})
 
-    def _run_executor(self, inv: ToolInvocation) -> ToolResult:
+    def _execute_once(self, inv: ToolInvocation, spec) -> ToolResult:
         try:
-            return self.executor.execute(inv)
-        except Exception as exc:  # an executor crash is a failed execution, never a success
-            return ToolResult(False, error=f"executor raised {type(exc).__name__}: {exc}")
+            result = self.executor.execute(inv)
+        except Exception as exc:
+            if spec.category in (ToolCategory.EXTERNAL, ToolCategory.HIGH_RISK):
+                # The external system may or may not have acted: never call this a failure.
+                result = ToolResult(False, error=f"{type(exc).__name__}: {exc}", status=ToolStatus.EXECUTION_UNKNOWN)
+            else:  # internal/read tools are local; a crash means nothing was committed
+                result = ToolResult(False, error=f"executor raised {type(exc).__name__}: {exc}")
+        return replace(result, tool_call_id=result.tool_call_id or inv.tool_call_id,
+                       tool_name=inv.tool_name, executed_at=result.executed_at or self.approvals.clock())
+
+    def _run_executor(self, inv: ToolInvocation, risk: RiskClass = RiskClass.GREEN) -> ToolResult:
+        spec = self.tools.get(inv.tool_name)
+        if spec.category is ToolCategory.READ:
+            setting, retry_class = self.policy.retries.read_tool, RetryClass.READ_TOOL_RETRY
+            retryable = lambda r: r.status is ToolStatus.ERROR
+        else:
+            setting, retry_class = self.policy.retries.write_tool, RetryClass.WRITE_TOOL_RETRY
+            retryable = lambda r: (r.status is ToolStatus.ERROR and write_retry_allowed(
+                idempotent=spec.idempotent_with_execution_id, risk=risk, ambiguous=False).allowed)
+
+        def attempt(n: int) -> ToolResult:
+            if n > 1:
+                self.audit.record(EventType.TOOL_RETRIED, organization_id=inv.organization_id,
+                                  actor_type=ActorType.SYSTEM, actor_id="gateway", agent_id=inv.agent_id,
+                                  run_id=inv.run_id, object_type="tool", object_id=inv.tool_name,
+                                  payload={"attempt": n, "retry_class": retry_class.value,
+                                           "execution_id": inv.execution_id})
+            return self._execute_once(inv, spec)
+
+        result, _ = run_with_retries(attempt, setting, retryable, sleep=self.sleep)
+        return result
 
     # ---------------------------------------------------------------------------------
     def submit(self, run_id: str, action: Mapping[str, Any], *, pause_run: bool = True) -> ActionOutcome:
@@ -164,8 +208,10 @@ class ActionGateway:
         decision = requires_approval(assessment, agent, self.policy, run.principal)
         spec = self.tools.get(tool_name)
         if not decision.required:
-            inv = ToolInvocation(run.organization_id, agent.agent_id, run_id, tool_name, action_type, dict(payload))
-            result = self._run_executor(inv)
+            inv = ToolInvocation(run.organization_id, agent.agent_id, run_id, tool_name, action_type, dict(payload),
+                                 tool_call_id=action.get("tool_call_id") or action.get("action_id"),
+                                 execution_id=new_id("exe"), principal=run.principal)
+            result = self._run_executor(inv, assessment.final_class)
             self._record_result(inv, result, assessment.final_class)
             return ActionOutcome(ActionStatus.EXECUTED if result.success else ActionStatus.FAILED, tool_name,
                                  decision.reason if result.success else (result.error or "execution failed"),
@@ -200,14 +246,25 @@ class ActionGateway:
         self.approvals.begin_execution(approval_id, organization_id=run.organization_id, agent_id=agent.agent_id,
                                        run_id=run.run_id, tool_name=tool_name, action_type=action_type,
                                        payload=payload)
+        # execution_id = approval_id: one approval is one logical execution, so an idempotent
+        # adapter can de-duplicate a repeated delivery of the same call.
         inv = ToolInvocation(run.organization_id, agent.agent_id, run.run_id, tool_name, action_type, dict(payload),
-                             approval_id)
-        result = self._run_executor(inv)
+                             approval_id, tool_call_id=approval_id, execution_id=approval_id,
+                             principal=run.principal)
+        result = self._run_executor(inv, approval.risk_class)
+        self._record_result(inv, result, approval.risk_class)
+        if result.status is ToolStatus.EXECUTION_UNKNOWN:
+            updated = self.approvals.mark_unknown(approval_id, result.error or "execution outcome unknown")
+            if self.on_execution_unknown is not None:
+                self.on_execution_unknown(updated, result)
+            self.resume_if_unblocked(run.run_id)
+            return ActionOutcome(ActionStatus.EXECUTION_UNKNOWN, tool_name,
+                                 "external outcome unknown; reconciliation required, no automatic retry",
+                                 approval_id=approval_id, result=result)
         if result.success:
             self.approvals.mark_executed(approval_id, result.result_ref)
         else:
             self.approvals.mark_failed(approval_id, result.error or "execution failed")
-        self._record_result(inv, result, approval.risk_class)
         self.resume_if_unblocked(run.run_id)
         return ActionOutcome(ActionStatus.EXECUTED if result.success else ActionStatus.FAILED, tool_name,
                              "executed under approval" if result.success else (result.error or "execution failed"),

@@ -15,8 +15,12 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex}"
+def new_id(prefix: str = "") -> str:
+    """A random UUID (string form), usable as a PostgreSQL uuid primary key.
+
+    `prefix` is accepted for call-site readability only; it is not part of the id, because
+    database ids are UUIDs (Part 25). Type information lives in the column/table, not the id."""
+    return str(uuid.uuid4())
 
 
 def require_aware(dt: datetime, label: str = "datetime") -> datetime:

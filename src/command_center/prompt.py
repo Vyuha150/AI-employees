@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_PATH = ROOT / "prompts" / "core_operating_principles.md"
+from .resources import resource
+
+TEMPLATE_PATH = resource("prompts", "core_operating_principles.md")  # packaged resource
 PLACEHOLDER = "{{AGENT_PROFILE}}"
 
 REQUIRED_PROFILE_FIELDS: tuple[str, ...] = (
@@ -72,7 +73,7 @@ def render_profile(profile: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(profile: Mapping[str, Any], template_path: Path = TEMPLATE_PATH) -> str:
+def build_system_prompt(profile: Mapping[str, Any], template_path: Any = TEMPLATE_PATH) -> str:
     template = template_path.read_text(encoding="utf-8")
     if template.count(PLACEHOLDER) != 1:
         raise ValueError(f"Template must contain exactly one {PLACEHOLDER} placeholder")

@@ -16,6 +16,7 @@ and has no defaults, so a user's permissions are never read from static configur
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -29,9 +30,10 @@ from .errors import (
     InvalidAgentProfileError,
     UnknownAgentError,
 )
+from .resources import Resource, as_resource, default_agent_dir, stem
 from .tools import DEFAULT_TOOL_REGISTRY, ToolRegistry
 
-DEFAULT_AGENT_DIR = Path(__file__).resolve().parents[2] / "config" / "agents"
+DEFAULT_AGENT_DIR = default_agent_dir()  # packaged defaults (importlib.resources)
 
 # The 12 core agents. A missing file for any of these is an error, not a silent gap.
 CORE_ROSTER: tuple[str, ...] = (
@@ -83,6 +85,30 @@ class CostLimits:
     max_tokens_per_run: int
     max_runs_per_day: int
     currency: str
+    max_cost_per_day: float
+    max_cost_per_month: float
+
+
+class MissedRunPolicy(StrEnum):
+    SKIP = "SKIP"            # default: missed occurrences are recorded and skipped
+    RUN_ONCE = "RUN_ONCE"    # one run for the most recent missed occurrence
+    CATCH_UP = "CATCH_UP"    # one run per missed occurrence, bounded by scheduler.max_catch_up_runs
+
+
+class ConcurrencyPolicy(StrEnum):
+    FORBID = "FORBID"        # default: do not start while a previous run of the job is active
+    ALLOW = "ALLOW"
+
+
+@dataclass(frozen=True)
+class ScheduledJobSpec:
+    job_id: str
+    workflow: str
+    cron: str
+    timezone: str            # IANA name, or ORGANIZATION_DEFAULT
+    enabled: bool
+    missed_run_policy: MissedRunPolicy
+    concurrency_policy: ConcurrencyPolicy
 
 
 @dataclass(frozen=True)
@@ -118,6 +144,10 @@ class AgentProfile:
     prohibited_actions: tuple[str, ...]
     boundaries: tuple[str, ...]
     delegation: DelegationPolicy
+    model_profile: str = "standard"
+    schedule_jobs: tuple[ScheduledJobSpec, ...] = ()
+    triggers: tuple[str, ...] = ()
+    placeholders: tuple[str, ...] = ()
 
     def to_static_prompt_fields(self) -> dict[str, Any]:
         return {
@@ -149,13 +179,41 @@ class AgentProfile:
 
 @dataclass(frozen=True)
 class RunContext:
-    """Per-run prompt fields. All are required; the application supplies them."""
+    """Per-run context (Part 31). Kept separate from static agent configuration on purpose.
+
+    The first five fields supply the dynamic prompt fields and are required. The request
+    identity fields are optional metadata. User identity, roles and permissions are read
+    from `current_user` (the authenticated Principal); they are never copied into YAML.
+    """
 
     organization_context: str
     relevant_memory: tuple[str, ...]
     relevant_knowledge: tuple[str, ...]
     current_task: str
     current_user: Principal
+    conversation_id: str | None = field(default=None, kw_only=True)
+    task_id: str | None = field(default=None, kw_only=True)
+    workflow_run_id: str | None = field(default=None, kw_only=True)
+    request_id: str | None = field(default=None, kw_only=True)
+    timezone: str | None = field(default=None, kw_only=True)          # None: organization default
+    requested_agent_id: str | None = field(default=None, kw_only=True)
+    request_timestamp: datetime | None = field(default=None, kw_only=True)
+
+    @property
+    def organization_id(self) -> str:
+        return self.current_user.organization_id
+
+    @property
+    def user_id(self) -> str:
+        return self.current_user.principal_id
+
+    @property
+    def user_roles(self) -> frozenset[str]:
+        return self.current_user.roles
+
+    @property
+    def user_permissions(self) -> frozenset[str]:
+        return self.current_user.permissions
 
     def to_prompt_fields(self) -> dict[str, Any]:
         if not self.current_task.strip():
@@ -183,8 +241,23 @@ _REQUIRED = {
     "autonomy_level": str, "autonomy_description": str, "risk_policy": dict, "escalation_rules": list,
     "knowledge_scopes": list, "memory_scopes": list, "schedule_policy": dict, "cost_limits": dict,
     "output_preferences": dict, "prohibited_actions": list, "boundaries": list, "delegation": dict,
+    "model_profile": str,
 }
-_OPTIONAL = {"reports_to"}
+_OPTIONAL = {"reports_to", "placeholders"}
+_COST_KEYS = {"max_cost_per_run", "max_cost_per_day", "max_cost_per_month", "max_tokens_per_run",
+              "max_runs_per_day", "currency"}
+_JOB_KEYS = {"job_id", "workflow", "cron", "timezone", "enabled", "missed_run_policy", "concurrency_policy"}
+_TRIGGERS = {"scheduled", "on_demand", "delegated"}
+
+
+def _dotted_exists(raw: Mapping[str, Any], path: str) -> bool:
+    node: Any = raw
+    for part in path.split("."):
+        if isinstance(node, Mapping) and part in node:
+            node = node[part]
+        else:
+            return False
+    return True
 
 
 def validate_agent_profile(
@@ -270,12 +343,53 @@ def validate_agent_profile(
         errors.append("memory_scopes must not be empty")
 
     cl = raw["cost_limits"]
-    if set(cl) != {"max_cost_per_run", "max_tokens_per_run", "max_runs_per_day", "currency"}:
-        errors.append("cost_limits must have exactly max_cost_per_run, max_tokens_per_run, max_runs_per_day, currency")
+    if set(cl) != _COST_KEYS:
+        errors.append("cost_limits must have exactly " + ", ".join(sorted(_COST_KEYS)))
     else:
-        for k in ("max_cost_per_run", "max_tokens_per_run", "max_runs_per_day"):
+        for k in sorted(_COST_KEYS - {"currency"}):
             if not isinstance(cl[k], (int, float)) or isinstance(cl[k], bool) or cl[k] <= 0:
                 errors.append(f"cost_limits.{k} must be a positive number")
+        if not errors and not (cl["max_cost_per_run"] <= cl["max_cost_per_day"] <= cl["max_cost_per_month"]):
+            errors.append("cost_limits must satisfy per_run <= per_day <= per_month")
+
+    sp = raw["schedule_policy"]
+    if set(sp) != {"triggers", "jobs"} or not isinstance(sp.get("jobs"), list):
+        errors.append("schedule_policy must have exactly triggers and jobs")
+    else:
+        bad = set(sp["triggers"]) - _TRIGGERS
+        if bad:
+            errors.append(f"schedule_policy.triggers has unknown values {sorted(bad)}")
+        if sp["jobs"] and "scheduled" not in sp["triggers"]:
+            errors.append("schedule_policy has jobs but 'scheduled' is not an allowed trigger")
+        seen: set[str] = set()
+        for i, j in enumerate(sp["jobs"]):
+            if not isinstance(j, Mapping) or set(j) != _JOB_KEYS:
+                errors.append(f"schedule_policy.jobs[{i}] must have exactly {', '.join(sorted(_JOB_KEYS))}")
+                continue
+            if j["job_id"] in seen:
+                errors.append(f"duplicate job_id {j['job_id']!r}")
+            seen.add(j["job_id"])
+            if not isinstance(j["enabled"], bool):
+                errors.append(f"schedule_policy.jobs[{i}].enabled must be a boolean")
+            if j["missed_run_policy"] not in MissedRunPolicy.__members__:
+                errors.append(f"schedule_policy.jobs[{i}] invalid missed_run_policy")
+            if j["concurrency_policy"] not in ConcurrencyPolicy.__members__:
+                errors.append(f"schedule_policy.jobs[{i}] invalid concurrency_policy")
+            from .cron import CronError, CronExpression
+            try:
+                CronExpression.parse(j["cron"])
+            except CronError as exc:
+                errors.append(f"schedule_policy.jobs[{i}].cron: {exc}")
+            if j["timezone"] != "ORGANIZATION_DEFAULT":
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+                try:
+                    ZoneInfo(j["timezone"])
+                except (ZoneInfoNotFoundError, ValueError):
+                    errors.append(f"schedule_policy.jobs[{i}].timezone {j['timezone']!r} is not an IANA zone")
+
+    for ph in raw.get("placeholders", []) or []:
+        if not isinstance(ph, str) or not _dotted_exists(raw, ph):
+            errors.append(f"placeholders: {ph!r} does not refer to a field in this profile")
 
     d = raw["delegation"]
     if set(d) != {"can_delegate", "allowed_targets"} or not isinstance(d.get("can_delegate"), bool):
@@ -317,12 +431,36 @@ def _parse(raw: Mapping[str, Any]) -> AgentProfile:
         memory_scopes=tuple(MemoryScope(s) for s in raw["memory_scopes"]),
         schedule_policy=dict(raw["schedule_policy"]),
         cost_limits=CostLimits(float(cl["max_cost_per_run"]), int(cl["max_tokens_per_run"]),
-                               int(cl["max_runs_per_day"]), cl["currency"]),
+                               int(cl["max_runs_per_day"]), cl["currency"], float(cl["max_cost_per_day"]),
+                               float(cl["max_cost_per_month"])),
         output_preferences=dict(raw["output_preferences"]),
         prohibited_actions=tuple(raw["prohibited_actions"]),
         boundaries=tuple(raw["boundaries"]),
         delegation=DelegationPolicy(raw["delegation"]["can_delegate"], tuple(raw["delegation"]["allowed_targets"])),
+        model_profile=raw["model_profile"],
+        schedule_jobs=tuple(ScheduledJobSpec(j["job_id"], j["workflow"], j["cron"], j["timezone"], j["enabled"],
+                                             MissedRunPolicy(j["missed_run_policy"]),
+                                             ConcurrencyPolicy(j["concurrency_policy"]))
+                            for j in raw["schedule_policy"]["jobs"]),
+        triggers=tuple(raw["schedule_policy"]["triggers"]),
+        placeholders=tuple(raw.get("placeholders") or ()),
     )
+
+
+def load_raw_profiles(directory: "str | Path | Resource" = DEFAULT_AGENT_DIR) -> dict[str, Any]:
+    """Read every *.yaml profile in a directory (filesystem or packaged resource)."""
+    directory = as_resource(directory)
+    if not directory.is_dir():
+        raise ConfigurationError(f"agent config directory not found: {directory}")
+    raws: dict[str, Any] = {}
+    for node in sorted(directory.iterdir(), key=lambda n: n.name):
+        if not node.name.endswith(".yaml"):
+            continue
+        try:
+            raws[stem(node)] = yaml.safe_load(node.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raws[stem(node)] = {"__parse_error__": str(exc)}
+    return raws
 
 
 # ----------------------------------------------------------------------------------------
@@ -355,20 +493,11 @@ class AgentRegistry:
     @classmethod
     def load_dir(
         cls,
-        directory: str | Path = DEFAULT_AGENT_DIR,
+        directory: "str | Path | Resource" = DEFAULT_AGENT_DIR,
         tools: ToolRegistry = DEFAULT_TOOL_REGISTRY,
         roster: Iterable[str] = CORE_ROSTER,
     ) -> "AgentRegistry":
-        directory = Path(directory)
-        if not directory.is_dir():
-            raise ConfigurationError(f"agent config directory not found: {directory}")
-        raws: dict[str, Any] = {}
-        for path in sorted(directory.glob("*.yaml")):
-            try:
-                raws[path.stem] = yaml.safe_load(path.read_text(encoding="utf-8"))
-            except yaml.YAMLError as exc:
-                raws[path.stem] = {"__parse_error__": str(exc)}
-        return cls.from_mappings(raws, tools, roster)
+        return cls.from_mappings(load_raw_profiles(directory), tools, roster)
 
     # -- hierarchy ---------------------------------------------------------------------
     def _invalidate(self, agent_id: str, error: str) -> None:

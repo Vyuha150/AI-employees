@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agents import AgentProfile, AgentRegistry, RunContext, build_prompt_profile
 from .audit import AuditLogger, EventType
@@ -40,6 +40,12 @@ class AgentRun:
     tokens_used: int = 0
     cost_used: float = 0.0
     failure_reason: str | None = None
+    # model metadata (Part 53): what actually served the run, and any configured fallback
+    model_provider: str | None = None
+    model_name: str | None = None
+    fallback_used: bool = False
+    fallback_from: str | None = None
+    cost_unknown: bool = False
     version: int = 0
 
 
@@ -57,6 +63,8 @@ class RunService:
     audit: AuditLogger
     repo: Repository[AgentRun] = field(default_factory=lambda: InMemoryRepository("run_id"))
     clock: Clock = utc_now
+    # Called with the agent profile before a run is created; raises BudgetExceededError to block.
+    budget_guard: Callable[[AgentProfile], Any] | None = None
 
     def get(self, run_id: str) -> AgentRun:
         return self.repo.get(run_id)
@@ -94,6 +102,8 @@ class RunService:
             if prior.agent_id != agent_id:
                 raise InvalidTransitionError("a retry must be for the same agent")
 
+        if self.budget_guard is not None:
+            self.budget_guard(agent)
         today = self.clock().date()
         runs_today = len(self.repo.list(lambda r: r.agent_id == agent_id and r.created_at.date() == today))
         if runs_today >= agent.cost_limits.max_runs_per_day:
@@ -161,6 +171,17 @@ class RunService:
                 f"run {run_id} exceeded limits (tokens {updated.tokens_used}/{limits.max_tokens_per_run}, "
                 f"cost {updated.cost_used:.4f}/{limits.max_cost_per_run} {limits.currency})")
         return updated
+
+    def set_model(self, run_id: str, *, provider: str, model: str, fallback_from: str | None = None) -> AgentRun:
+        run = self.repo.get(run_id)
+        return self.repo.update(replace(run, model_provider=provider, model_name=model,
+                                        fallback_used=run.fallback_used or fallback_from is not None,
+                                        fallback_from=fallback_from or run.fallback_from),
+                                expected_version=run.version)
+
+    def mark_cost_unknown(self, run_id: str) -> AgentRun:
+        run = self.repo.get(run_id)
+        return self.repo.update(replace(run, cost_unknown=True), expected_version=run.version)
 
     def build_system_prompt(self, run_id: str, context: RunContext) -> str:
         run = self.repo.get(run_id)

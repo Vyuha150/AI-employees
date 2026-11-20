@@ -1,0 +1,916 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Weekly Business Review (Part 20, v2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "review_period_start",
+    "review_period_end",
+    "generated_at",
+    "generated_by_agent",
+    "organization_id",
+    "authoritative",
+    "overall_health",
+    "revenue",
+    "profit",
+    "cash",
+    "pipeline",
+    "delivery",
+    "customers",
+    "costs",
+    "people",
+    "risk",
+    "top_wins",
+    "top_failures",
+    "root_causes",
+    "decisions_required",
+    "priorities_next_week",
+    "recommendations",
+    "watchlist",
+    "unresolved_items",
+    "data_quality",
+    "sources"
+  ],
+  "properties": {
+    "review_period_start": {
+      "type": "string",
+      "format": "date"
+    },
+    "review_period_end": {
+      "type": "string",
+      "format": "date"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_by_agent": {
+      "type": "string"
+    },
+    "organization_id": {
+      "type": "string"
+    },
+    "authoritative": {
+      "type": "boolean",
+      "description": "Must be false when data quality is not GOOD or any domain is UNAVAILABLE/PARTIAL."
+    },
+    "overall_health": {
+      "$ref": "#/$defs/health"
+    },
+    "revenue": {
+      "$ref": "#/$defs/section"
+    },
+    "profit": {
+      "$ref": "#/$defs/section"
+    },
+    "cash": {
+      "$ref": "#/$defs/section"
+    },
+    "pipeline": {
+      "$ref": "#/$defs/section"
+    },
+    "delivery": {
+      "$ref": "#/$defs/section"
+    },
+    "customers": {
+      "$ref": "#/$defs/section"
+    },
+    "costs": {
+      "$ref": "#/$defs/section"
+    },
+    "people": {
+      "$ref": "#/$defs/section"
+    },
+    "risk": {
+      "$ref": "#/$defs/section"
+    },
+    "top_wins": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/win"
+      },
+      "maxItems": 5
+    },
+    "top_failures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failure"
+      },
+      "maxItems": 5
+    },
+    "root_causes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/root_cause"
+      }
+    },
+    "decisions_required": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/decision"
+      }
+    },
+    "priorities_next_week": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/priority"
+      },
+      "maxItems": 7
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/recommendation"
+      },
+      "maxItems": 5
+    },
+    "watchlist": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/watch"
+      }
+    },
+    "unresolved_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/unresolved"
+      }
+    },
+    "data_quality": {
+      "$ref": "#/$defs/data_quality"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    }
+  },
+  "$defs": {
+    "confidence": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "level": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ]
+    },
+    "money": {
+      "description": "Monetary estimate. Use null when unknown \u2014 never fabricate (\u00a73).",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "amount",
+        "currency",
+        "basis"
+      ],
+      "properties": {
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "period": {
+          "type": "string"
+        },
+        "basis": {
+          "type": "string",
+          "description": "How the estimate was derived."
+        }
+      }
+    },
+    "recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "problem_or_opportunity",
+        "evidence",
+        "recommendation",
+        "why_now",
+        "expected_impact",
+        "impact_category",
+        "estimated_value",
+        "estimated_cost",
+        "effort",
+        "urgency",
+        "dependencies",
+        "risks",
+        "reversible",
+        "confidence",
+        "suggested_owner",
+        "kpis_affected"
+      ],
+      "properties": {
+        "problem_or_opportunity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_now": {
+          "type": "string"
+        },
+        "expected_impact": {
+          "type": "string"
+        },
+        "impact_category": {
+          "enum": [
+            "REVENUE",
+            "GROSS_MARGIN",
+            "CASHFLOW",
+            "CUSTOMER_VALUE",
+            "OPERATIONAL_RELIABILITY",
+            "PRODUCTIVITY",
+            "RISK_REDUCTION",
+            "STRATEGIC"
+          ]
+        },
+        "estimated_value": {
+          "$ref": "#/$defs/money"
+        },
+        "estimated_cost": {
+          "$ref": "#/$defs/money"
+        },
+        "effort": {
+          "$ref": "#/$defs/level"
+        },
+        "urgency": {
+          "$ref": "#/$defs/level"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "suggested_owner": {
+          "type": "string"
+        },
+        "kpis_affected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "change_management": {
+          "$ref": "#/$defs/change_management"
+        },
+        "evidence_source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Source ids backing the evidence (\u00a716). Validated against sources."
+        }
+      }
+    },
+    "change_management": {
+      "description": "Required content for system/business change suggestions (\u00a721).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_state",
+        "problem",
+        "desired_state",
+        "change",
+        "expected_benefit",
+        "cost",
+        "risk",
+        "implementation_steps",
+        "validation_method",
+        "rollback_plan"
+      ],
+      "properties": {
+        "current_state": {
+          "type": "string"
+        },
+        "problem": {
+          "type": "string"
+        },
+        "desired_state": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "expected_benefit": {
+          "type": "string"
+        },
+        "cost": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string"
+        },
+        "implementation_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validation_method": {
+          "type": "string"
+        },
+        "rollback_plan": {
+          "type": "string"
+        },
+        "kpi_before": {
+          "type": "string"
+        },
+        "kpi_after_target": {
+          "type": "string"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "reference"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "COMPANY_DATABASE",
+            "DOCUMENT",
+            "USER_MESSAGE",
+            "TOOL_RESULT",
+            "WEB_SOURCE",
+            "SYSTEM_CONFIG",
+            "HUMAN_DECISION",
+            "ACCEPTED_MEMORY",
+            "AGENT_OUTPUT",
+            "DATABASE",
+            "MEMORY",
+            "KNOWLEDGE",
+            "USER",
+            "AGENT",
+            "WEB"
+          ],
+          "description": "Canonical types first; DATABASE, MEMORY, KNOWLEDGE, USER, AGENT, WEB are legacy aliases (see sources.py)."
+        },
+        "reference": {
+          "type": "string"
+        },
+        "retrieved_at": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authority_level": {
+          "enum": [
+            "AUTHORITATIVE",
+            "SECONDARY",
+            "UNVERIFIED"
+          ]
+        }
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overall_status",
+        "stale_sources",
+        "missing_sources",
+        "conflicting_sources",
+        "unverified_metrics",
+        "notes"
+      ],
+      "properties": {
+        "overall_status": {
+          "enum": [
+            "GOOD",
+            "DEGRADED",
+            "POOR",
+            "UNKNOWN"
+          ]
+        },
+        "stale_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "last_updated"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "last_updated": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_freshness": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "missing_sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicting_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "metric",
+              "source_ids",
+              "description"
+            ],
+            "properties": {
+              "metric": {
+                "type": "string"
+              },
+              "source_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "unverified_metrics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "summary",
+        "trend",
+        "key_findings",
+        "risks",
+        "recommended_actions",
+        "source_ids"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "GREEN",
+            "AMBER",
+            "RED",
+            "UNAVAILABLE",
+            "PARTIAL"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "current_value": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "variance": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": "string"
+        },
+        "trend": {
+          "enum": [
+            "UP",
+            "DOWN",
+            "FLAT",
+            "UNKNOWN"
+          ]
+        },
+        "key_findings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommended_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "score",
+        "summary",
+        "components"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "GREEN",
+            "AMBER",
+            "RED",
+            "UNKNOWN"
+          ]
+        },
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "null when inputs are insufficient; never guessed"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "status"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "GREEN",
+                  "AMBER",
+                  "RED",
+                  "UNAVAILABLE",
+                  "PARTIAL",
+                  "UNKNOWN"
+                ]
+              },
+              "score": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "win": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "business_impact",
+        "evidence",
+        "source_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "business_impact": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "business_impact",
+        "root_cause_status",
+        "source_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "business_impact": {
+          "type": "string"
+        },
+        "root_cause_status": {
+          "enum": [
+            "VERIFIED",
+            "SUSPECTED",
+            "UNKNOWN"
+          ]
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "root_cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "problem",
+        "cause",
+        "confidence",
+        "verified",
+        "source_ids"
+      ],
+      "properties": {
+        "problem": {
+          "type": "string"
+        },
+        "cause": {
+          "type": "string"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "why_required",
+        "deadline",
+        "risk_if_delayed",
+        "recommended_option",
+        "alternatives",
+        "source_ids"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_required": {
+          "type": "string"
+        },
+        "deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "risk_if_delayed": {
+          "type": "string"
+        },
+        "recommended_option": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "priority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "objective",
+        "owner",
+        "priority",
+        "expected_impact",
+        "deadline",
+        "kpi_ids",
+        "source_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "objective": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "expected_impact": {
+          "type": "string"
+        },
+        "deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kpi_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "watch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "reason",
+        "monitoring_metric",
+        "trigger_condition",
+        "owner",
+        "source_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "monitoring_metric": {
+          "type": "string"
+        },
+        "trigger_condition": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "unresolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "reason_unresolved",
+        "owner",
+        "next_action",
+        "due_date",
+        "source_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "reason_unresolved": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "next_action": {
+          "type": "string"
+        },
+        "due_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

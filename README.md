@@ -13,14 +13,16 @@ and an application-enforced control layer:
 
 | Path | Purpose |
 |---|---|
-| `prompts/core_operating_principles.md` | 30-section operating principles; `{{AGENT_PROFILE}}` is where the profile is injected (§1) |
-| `config/agents/*.yaml` | The 12 agent profiles (mission, responsibilities, KPI definitions, tools, autonomy, escalation, scopes, limits) |
-| `config/organization_policy.example.yaml` | Risk thresholds, approver roles, approval TTLs, orchestration limits (placeholders) |
-| `schemas/structured_response.schema.json` | Strict STRUCTURED MODE contract (§25) |
-| `schemas/daily_brief.schema.json`, `schemas/weekly_review.schema.json` | Brief and review contracts |
-| `src/command_center/` | Registry, tools, risk, approvals, audit, state machines, lifecycle services, gateway |
+| `src/command_center/resources/prompts/` | 30-section operating principles; `{{AGENT_PROFILE}}` is where the profile is injected (§1) |
+| `src/command_center/resources/config/agents/*.yaml` | The 12 agent profiles (mission, responsibilities, KPI definitions, tools, autonomy, schedules, cost limits, model profile) |
+| `src/command_center/resources/config/organization_policy.example.yaml` | Risk thresholds, approvers, TTLs, budgets, scheduler, escalations, privacy gates (placeholders marked) |
+| `src/command_center/resources/config/models.yaml` | Model profiles, pricing, fallback policy (no secrets) |
+| `src/command_center/resources/schemas/` | Structured response, daily brief, weekly review contracts |
+| `src/command_center/resources/migrations/` | PostgreSQL schema (`0001_core.sql`) and Supabase RLS (`supabase/0101_rls.sql`) |
+| `src/command_center/` | Registry, risk, approvals, audit, runtime, scheduler, workflows, API, PostgreSQL adapters |
 | `profiles/chief_of_staff.example.json` | Phase 1 example profile (kept; still valid prompt-builder input) |
-| `docs/architecture.md` | Control flow, guarantees, design decisions, known gaps, PostgreSQL mapping |
+| `docs/architecture.md` | Control flow, guarantees, design decisions, known gaps |
+| `docs/supabase_rls.md`, `docs/workforce_data_privacy.md` | RLS model; people-data privacy gate |
 
 ## Agents
 
@@ -42,15 +44,28 @@ and an application-enforced control layer:
 ## Usage
 
 ```bash
-pip install -e '.[dev]'
-pytest
+pip install -e '.[dev]'                       # or: pip install ai-command-center[postgres,claude]
+ai-command-center config validate --env development
+CC_ENVIRONMENT=production CC_CONFIG_DIR=/etc/command-center ai-command-center config validate
+pytest                                        # add CC_TEST_DATABASE_URL=<admin dsn> for PostgreSQL tests
 ```
 
+Production refuses to start while any security-critical or financial value is still listed under
+`placeholders`, or while the example policy is in use. Copy the packaged config to your own directory, review
+every value, remove the placeholder markers, and point `CC_CONFIG_DIR` at it. Secrets (`ANTHROPIC_API_KEY`,
+`CC_DATABASE_URL`) are read from the environment only.
+
 ```python
+from command_center.config import load_config
+from command_center.model_providers import ProviderRegistry
 from command_center.system import CommandCenter
 from command_center.agents import RunContext
 
-cc = CommandCenter.build()                       # loads config/, fails closed on any invalid profile
+cfg = load_config()                              # CC_ENVIRONMENT + CC_CONFIG_DIR; fails closed
+cc = CommandCenter.from_config(cfg, providers=ProviderRegistry.from_config(cfg.models))
+# Agent runtime: cc.runtime.execute(run_id, RunContext(...)) drives the model loop through the gateway.
+# PostgreSQL: CommandCenter.build(..., repositories=PgRepositories(db, org_uuid, org_slug))
+cc = CommandCenter.build()                       # in-memory, packaged defaults (development and tests)
 run = cc.runs.create_run("procurement", principal, "Restock SKU A")
 cc.runs.start(run.run_id)
 prompt = cc.runs.build_system_prompt(run.run_id, RunContext(org_ctx, memories, knowledge, task, principal))

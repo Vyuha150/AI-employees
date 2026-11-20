@@ -146,12 +146,14 @@ class ApprovalStatus(StrEnum):
     CANCELLED = "CANCELLED"
     EXECUTED = "EXECUTED"
     FAILED = "FAILED"
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"   # outcome undetermined; needs human reconciliation
 
 
 A = ApprovalStatus
 APPROVAL_MACHINE = _machine("approval", {
     A.PENDING: {A.APPROVED, A.REJECTED, A.EXPIRED, A.CANCELLED},
-    A.APPROVED: {A.EXECUTED, A.FAILED, A.EXPIRED, A.CANCELLED},
+    A.APPROVED: {A.EXECUTED, A.FAILED, A.EXPIRED, A.CANCELLED, A.EXECUTION_UNKNOWN},
+    A.EXECUTION_UNKNOWN: {A.EXECUTED, A.FAILED},   # reconciliation only; never re-executed
 }, ApprovalStatus)
 
 
@@ -168,6 +170,20 @@ MEMORY_MACHINE = _machine("memory", {
     MemoryStatus.PROPOSED: {MemoryStatus.ACCEPTED, MemoryStatus.REJECTED, MemoryStatus.EXPIRED},
     MemoryStatus.ACCEPTED: {MemoryStatus.INVALIDATED, MemoryStatus.EXPIRED},
 }, MemoryStatus)
+
+
+# --- alert (Part 41) ---------------------------------------------------------------
+class AlertStatus(StrEnum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESOLVED = "RESOLVED"
+    DISMISSED = "DISMISSED"
+
+
+ALERT_MACHINE = _machine("alert", {
+    AlertStatus.OPEN: {AlertStatus.ACKNOWLEDGED, AlertStatus.RESOLVED, AlertStatus.DISMISSED},
+    AlertStatus.ACKNOWLEDGED: {AlertStatus.RESOLVED, AlertStatus.DISMISSED},
+}, AlertStatus)
 
 
 # --- delegation (Part 18) ---------------------------------------------------------

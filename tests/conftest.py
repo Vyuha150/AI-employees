@@ -11,7 +11,7 @@ from command_center.common import ActorType, Principal
 from command_center.system import CommandCenter
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT_DIR = ROOT / "config" / "agents"
+AGENT_DIR = ROOT / "src" / "command_center" / "resources" / "config" / "agents"
 ORG = "org_example"
 
 

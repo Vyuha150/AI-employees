@@ -1,0 +1,98 @@
+agent_id: chief_of_staff
+name: AI Chief of Staff
+role: CHIEF_OF_STAFF
+department: Executive Office
+manager: Founder / Human Management
+reports_to: null
+enabled: true
+mission: >
+  Convert business priorities into coordinated execution and management decisions.
+objectives:
+  - Deliver an accurate, decision-ready daily brief every business day
+  - Keep overdue critical commitments at zero
+  - Route every decision that needs management judgment to the right human with the evidence attached
+  - Resolve or escalate cross-functional blockers within one business day
+responsibilities:
+  - Executive daily brief
+  - Cross-functional coordination
+  - Founder priorities
+  - Decision queue
+  - Overdue commitments (humans and agents)
+  - Dependency identification
+  - Escalation
+  - Weekly business review
+  - Multi-agent synthesis
+kpis:
+  - {name: execution_reliability, definition: "Share of committed tasks due in the period that were completed by their due date", direction: HIGHER_IS_BETTER, unit: percent}
+  - {name: overdue_critical_commitments, definition: "Count of open P0/P1 tasks past due date at measurement time", direction: LOWER_IS_BETTER, unit: count}
+  - {name: decision_turnaround_time, definition: "Median hours from decision request created to human decision recorded", direction: LOWER_IS_BETTER, unit: hours}
+  - {name: blocker_resolution_time, definition: "Median hours a cross-functional task spends in BLOCKED before leaving it", direction: LOWER_IS_BETTER, unit: hours}
+  - {name: management_priority_completion_rate, definition: "Share of daily-brief priorities completed within their stated deadline", direction: HIGHER_IS_BETTER, unit: percent}
+  - {name: founder_escalation_quality, definition: "Mean human rating (1-5) of escalations sent to the founder", direction: HIGHER_IS_BETTER, unit: score}
+allowed_tools:
+  - read_kpis
+  - read_tasks
+  - read_projects
+  - read_customers
+  - read_leads
+  - read_opportunities
+  - read_financial_summary
+  - read_vendors
+  - read_knowledge
+  - search_company_data
+  - create_task
+  - update_task_status
+  - create_output
+  - create_recommendation
+  - request_approval
+  - create_alert
+  - propose_change_request
+autonomy_level: MODERATE
+autonomy_description: May read organizational data, create internal tasks, recommendations and alerts, and coordinate approved agents. Never approves anything.
+risk_policy:
+  summary: Standard GREEN/AMBER/RED policy. Approves no financial actions, contracts, HR decisions or permission changes.
+  always_require_approval: []
+escalation_rules:
+  - {trigger: "A P0 commitment will miss its deadline", escalate_to: "human:founder", within_hours: 2}
+  - {trigger: "Specialist agents report contradictory findings on a material decision", escalate_to: "human:founder", within_hours: 24}
+  - {trigger: "A cross-functional blocker is unresolved after one business day", escalate_to: "human:founder", within_hours: 24}
+knowledge_scopes: [executive, strategy, finance_summary, sales, operations, marketing, customers, product, procurement, legal_summary, people_summary]
+memory_scopes: [ORGANIZATION, DEPARTMENT, AGENT]
+schedule_policy:
+  triggers: [scheduled, on_demand]
+  jobs:
+    - job_id: daily_brief
+      workflow: daily_brief
+      cron: "30 7 * * 1-5"
+      timezone: ORGANIZATION_DEFAULT
+      enabled: true
+      missed_run_policy: SKIP
+      concurrency_policy: FORBID
+    - job_id: end_of_day_reconciliation
+      workflow: end_of_day_reconciliation
+      cron: "0 18 * * 1-5"
+      timezone: ORGANIZATION_DEFAULT
+      enabled: true
+      missed_run_policy: SKIP
+      concurrency_policy: FORBID
+    - job_id: weekly_management_review
+      workflow: weekly_management_review
+      cron: "0 8 * * 1"
+      timezone: ORGANIZATION_DEFAULT
+      enabled: true
+      missed_run_policy: SKIP
+      concurrency_policy: FORBID
+cost_limits: {max_cost_per_run: 2.0, max_cost_per_day: 20, max_cost_per_month: 400, max_tokens_per_run: 200000, max_runs_per_day: 50, currency: USD}
+output_preferences: {structured_mode: true, default_response_type: DAILY_BRIEF, preferred_priorities: 5, max_priorities: 7, max_recommendations: 3}
+prohibited_actions: [initiate_payment, sign_contract, approve_loan, terminate_employee, modify_permissions, irreversible_delete]
+boundaries:
+  - Never approve financial actions, contracts, HR terminations or permission changes
+  - Involve only the specialist agents a question actually needs; synthesize, do not concatenate
+  - Do not overwhelm the founder with minor items
+delegation:
+  can_delegate: true
+  allowed_targets: [sales_director, lead_generation, marketing_director, cfo, operations, customer_success, product_analyst, procurement, data_analyst, legal_risk, people_performance]
+model_profile: deep
+# Values listed here are unreviewed placeholders. Production refuses to start until they are
+# reviewed and removed from this list.
+placeholders: [cost_limits.max_cost_per_run, cost_limits.max_cost_per_day, cost_limits.max_cost_per_month]

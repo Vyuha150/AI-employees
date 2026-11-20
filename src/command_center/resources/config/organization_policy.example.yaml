@@ -1,0 +1,128 @@
+# Example organization policy. Thresholds are placeholders: set them for your organization.
+# The engine is currency-neutral; amounts are compared only in `currency`, and any other
+# currency escalates the action to RED (it cannot be compared safely).
+organization_id: org_example
+name: Example Organization
+currency: INR
+timezone: Asia/Kolkata
+
+risk:
+  # Applies to any tool whose payload carries `amount` and that has no specific rule below.
+  global_monetary:
+    amount_field: amount
+    currency_field: currency
+    amber_at: 0
+    red_at: 1000000
+  monetary:
+    create_purchase_order:
+      amount_field: amount
+      currency_field: currency
+      amber_at: 0
+      red_at: 1000000          # 10,00,000 and above is RED
+    publish_marketing_content:
+      amount_field: spend
+      currency_field: currency
+      amber_at: 0
+      red_at: 500000
+      required: false        # unpaid content carries no spend field
+  recipients:
+    send_customer_message:
+      field: recipients
+      red_at_count: 25         # bulk outreach is RED
+  sensitive_fields:
+    modify_customer_record:
+      field: changes
+      red_if_keys: [credit_limit, payment_terms, billing_details, contract_value, legal_entity]
+
+approvals:
+  ttl_hours: {GREEN: 72, AMBER: 72, RED: 24}
+  max_ttl_hours: {GREEN: 168, AMBER: 168, RED: 24}
+  approver_roles:
+    default: {GREEN: MANAGER, AMBER: MANAGER, RED: FOUNDER}
+    tools:
+      create_purchase_order: {AMBER: FINANCE_APPROVER, RED: FOUNDER}
+      initiate_payment: {RED: FOUNDER}
+      publish_marketing_content: {AMBER: MARKETING_APPROVER, RED: FOUNDER}
+
+# AMBER tools that ELEVATED-autonomy agents may auto-execute. Deliberately empty.
+amber_auto_execute_tools: []
+
+orchestration:
+  max_agents_per_orchestration: 4
+  max_delegation_depth: 1
+  max_total_cost: 5.0
+  max_total_tokens: 500000
+  max_runtime_seconds: 900
+  cost_currency: USD
+
+# AI usage budgets (in cost_currency). Per-agent limits live in each agent profile.
+budgets:
+  currency: USD
+  organization_max_cost_per_day: 50.0
+  organization_max_cost_per_month: 1000.0
+  warn_at_fraction: 0.8
+  exhaustion_policy: BLOCK_NEW_RUNS     # WARN | BLOCK_NEW_RUNS | REQUIRE_OVERRIDE
+  override_role: FOUNDER                # who may authorize a budget override
+  override_max_hours: 24
+
+scheduler:
+  enabled: true
+  max_catch_up_runs: 3                  # hard cap for CATCH_UP jobs
+  lookback_hours: 48                    # missed occurrences older than this are never run
+
+context_limits:
+  max_memory_items: 20
+  max_knowledge_items: 10
+  max_recent_outputs: 5
+  max_kpi_snapshots: 20
+  max_source_count: 60
+  max_context_chars: 60000
+
+retries:
+  model: {max_attempts: 2, backoff_seconds: 2.0}
+  read_tool: {max_attempts: 2, backoff_seconds: 1.0}
+  write_tool: {max_attempts: 1, backoff_seconds: 0.0}   # only idempotent tools may raise this
+
+# Typed escalation rules enforced by the escalation engine. Agent-profile escalation_rules
+# are guidance rendered into prompts; these are the enforced ones.
+escalations:
+  - {rule_id: p0_p1_overdue, type: TASK_OVERDUE, priorities: [P0, P1], severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
+  - {rule_id: blocked_too_long, type: TASK_BLOCKED_TOO_LONG, hours: 24, severity: WARNING, escalate_to: chief_of_staff, create_task: false}
+  - {rule_id: approval_stale, type: APPROVAL_PENDING_TOO_LONG, hours: 24, severity: WARNING, escalate_to: "human:FOUNDER", create_task: false}
+  - {rule_id: tool_failures, type: TOOL_FAILURE_REPEATED, count: 3, window_hours: 24, severity: WARNING, escalate_to: chief_of_staff, create_task: true}
+  - {rule_id: run_failures, type: RUN_FAILURE_REPEATED, count: 3, window_hours: 24, severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
+  - {rule_id: execution_unknown, type: EXECUTION_UNKNOWN, severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
+  - {rule_id: cash_runway_low, type: KPI_THRESHOLD, kpi: cash_runway, operator: "<", threshold: 6, severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
+  - {rule_id: customer_health_low, type: KPI_THRESHOLD, kpi: customer_health, operator: "<", threshold: 50, severity: WARNING, escalate_to: customer_success, create_task: true}
+  - {rule_id: critical_risk, type: CRITICAL_RISK_DETECTED, severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
+  - {rule_id: deal_stalled, type: DEAL_STALLED, days: 14, min_value: 500000, severity: WARNING, escalate_to: sales_director, create_task: true}
+
+# Privacy gates. A gated tool stays unavailable until a human privacy review approves it.
+privacy_gates:
+  read_people_summary:
+    approved: false
+    reviewed_by: null
+    reviewed_at: null
+    allowed_fields: []
+
+attachments:
+  allowed_mime_types: [application/pdf, text/plain, text/csv, text/markdown, image/png, image/jpeg]
+  max_size_bytes: 20000000
+  model_visible_classifications: [PUBLIC, INTERNAL]
+
+# Unreviewed placeholder values. Production mode refuses to start while any
+# security-critical or financial entry remains listed here.
+placeholders:
+  - risk.global_monetary.red_at
+  - risk.monetary.create_purchase_order.amber_at
+  - risk.monetary.create_purchase_order.red_at
+  - risk.monetary.publish_marketing_content.red_at
+  - risk.recipients.send_customer_message.red_at_count
+  - approvals.ttl_hours.RED
+  - approvals.ttl_hours.AMBER
+  - approvals.max_ttl_hours.RED
+  - budgets.organization_max_cost_per_day
+  - budgets.organization_max_cost_per_month
+  - orchestration.max_total_cost
+  - escalations.cash_runway_low.threshold
+  - escalations.deal_stalled.min_value

@@ -45,6 +45,7 @@ class ExecutionStatus(StrEnum):
     IN_PROGRESS = "IN_PROGRESS"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,41 @@ class ApprovalEngine:
                                  execution_error=error, executed_at=self.clock())
             self._event(EventType.APPROVAL_EXECUTION_FAILED, a, ActorType.SYSTEM, "system", ApprovalStatus.APPROVED,
                         {"error": error})
+            return a
+
+    def mark_unknown(self, approval_id: str, detail: str) -> Approval:
+        """The executor could not tell whether the external effect happened (e.g. timeout).
+        The approval is NOT reusable and the action is never retried automatically."""
+        with self._lock:
+            a = self.repo.get(approval_id)
+            if a.execution_status is not ExecutionStatus.IN_PROGRESS:
+                raise ApprovalError("mark_unknown requires an execution in progress")
+            a = self._transition(a, ApprovalStatus.EXECUTION_UNKNOWN, execution_status=ExecutionStatus.UNKNOWN,
+                                 execution_error=detail, executed_at=self.clock())
+            self._event(EventType.APPROVAL_EXECUTION_UNKNOWN, a, ActorType.SYSTEM, "system", ApprovalStatus.APPROVED,
+                        {"detail": detail, "risk_class": a.risk_class.value})
+            return a
+
+    def reconcile(self, approval_id: str, principal: Principal, *, executed: bool, evidence_ref: str,
+                  note: str) -> Approval:
+        """A human with the approval's required role records what actually happened, with evidence."""
+        if not evidence_ref.strip() or not note.strip():
+            raise ApprovalError("reconciliation needs an evidence reference and a note")
+        with self._lock:
+            a = self.repo.get(approval_id)
+            if a.status is not ApprovalStatus.EXECUTION_UNKNOWN:
+                raise ApprovalError("only EXECUTION_UNKNOWN approvals can be reconciled")
+            if not principal.is_human or principal.organization_id != a.organization_id \
+                    or a.required_role not in principal.roles:
+                raise PermissionDeniedError("reconciliation requires a human with the approval's required role")
+            target = ApprovalStatus.EXECUTED if executed else ApprovalStatus.FAILED
+            a = self._transition(a, target,
+                                 execution_status=ExecutionStatus.SUCCEEDED if executed else ExecutionStatus.FAILED,
+                                 execution_result_ref=evidence_ref if executed else a.execution_result_ref,
+                                 decision_note=note)
+            self._event(EventType.APPROVAL_RECONCILED, a, ActorType.HUMAN, principal.principal_id,
+                        ApprovalStatus.EXECUTION_UNKNOWN, {"executed": executed, "evidence_ref": evidence_ref,
+                                                           "note": note})
             return a
 
     def pending_for_run(self, run_id: str) -> list[Approval]:

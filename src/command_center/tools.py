@@ -46,6 +46,9 @@ class ToolSpec:
     requires_approval: bool
     allowed_roles: frozenset[Role]
     side_effect_type: SideEffect
+    # True only when the adapter de-duplicates on ToolInvocation.execution_id, which makes an
+    # automatic WRITE_TOOL_RETRY safe. Reads are side-effect free and always retry-safe.
+    idempotent_with_execution_id: bool = False
 
     def __post_init__(self) -> None:
         if self.default_risk_class is RiskClass.RED and not self.requires_approval:
@@ -64,7 +67,7 @@ def _roles(*roles: Role) -> frozenset[Role]:
 
 
 def _read(name: str, description: str, roles: frozenset[Role]) -> ToolSpec:
-    return ToolSpec(name, description, ToolCategory.READ, RiskClass.GREEN, True, False, roles, SideEffect.NONE)
+    return ToolSpec(name, description, ToolCategory.READ, RiskClass.GREEN, True, False, roles, SideEffect.NONE, True)
 
 
 def _write(name: str, description: str, roles: frozenset[Role]) -> ToolSpec:
@@ -143,6 +146,17 @@ _TOOLS: tuple[ToolSpec, ...] = (
 )
 
 
+# Proposed tools: defined but NOT in the active registry. They are added only when their
+# privacy gate is approved (see docs/workforce_data_privacy.md) via ToolRegistry.with_proposed().
+PROPOSED_TOOLS: dict[str, ToolSpec] = {
+    "read_people_summary": _read(
+        "read_people_summary",
+        "Read business-relevant workforce fields (role, department, workload, assigned tasks, goal completion, "
+        "skills, availability). Privacy-gated; never sensitive personal data.",
+        _roles(Role.PEOPLE_PERFORMANCE)),
+}
+
+
 class ToolRegistry:
     def __init__(self, tools: tuple[ToolSpec, ...] = _TOOLS):
         names = [t.name for t in tools]
@@ -164,6 +178,12 @@ class ToolRegistry:
 
     def all(self) -> list[ToolSpec]:
         return [self._tools[n] for n in self.names()]
+
+    def with_proposed(self, name: str) -> "ToolRegistry":
+        """Return a registry that also contains a proposed tool. Only call after its gate is approved."""
+        if name not in PROPOSED_TOOLS:
+            raise UnknownToolError(f"no proposed tool {name!r}")
+        return ToolRegistry(tuple(self._tools.values()) + (PROPOSED_TOOLS[name],))
 
     def role_may_use(self, role: Role, name: str) -> bool:
         return role in self.get(name).allowed_roles
