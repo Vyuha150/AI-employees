@@ -47,6 +47,7 @@ class ToolStatus(StrEnum):
     STALE = "STALE"
     ERROR = "ERROR"
     EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"   # external call outcome cannot be determined (e.g. timeout)
+    OUTCOME_UNKNOWN = "EXECUTION_UNKNOWN"     # alias (Part 55 name)
 
 
 _SUCCESS_STATUSES = frozenset({ToolStatus.OK, ToolStatus.PARTIAL, ToolStatus.STALE})

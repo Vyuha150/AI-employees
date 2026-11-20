@@ -59,7 +59,7 @@ CRITICAL_PLACEHOLDER_PREFIXES = ("risk.", "approvals.", "budgets.", "orchestrati
 
 REQUIRED_POLICY_SECTIONS = ("organization_id", "name", "currency", "timezone", "risk", "approvals", "budgets",
                             "scheduler", "context_limits", "retries", "escalations", "privacy_gates",
-                            "attachments", "orchestration")
+                            "attachments", "orchestration", "external_adapters", "briefing")
 
 _SECRET_KEY = re.compile(r"(api[_-]?key|secret|password|passwd|token|private[_-]?key|credential)", re.I)
 _SECRET_VALUE = re.compile(r"(sk-ant-[A-Za-z0-9_-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|postgres(ql)?://[^\s:@]+:[^\s@]+@)")
@@ -333,6 +333,17 @@ def _collect(config_dir: "str | Path | Resource | None", environment: "str | Env
                 report.unresolved.append(f"escalation {rule.rule_id}: escalate_to {target!r} is not an agent or human:<ROLE>")
         for ph in policy.placeholders:
             report.placeholders.append(f"organization_policy: {ph}")
+        for aid in sorted(policy.briefing.all_agents() - agent_ids):
+            report.unresolved.append(f"briefing: participant {aid!r} is not a registered agent")
+        if policy.scheduler.escalation_cron:
+            from .cron import CronError, CronExpression
+            try:
+                CronExpression.parse(policy.scheduler.escalation_cron)
+            except CronError as exc:
+                report.errors.append(f"scheduler.escalation_cron: {exc}")
+        enabled = [t for t, st in policy.external_adapters.items() if st.enabled]
+        if enabled:
+            report.warnings.append(f"external writes enabled for: {', '.join(sorted(enabled))}")
         for name, gate in policy.privacy_gates.items():
             if gate.approved and not (gate.reviewed_by and gate.reviewed_at):
                 report.errors.append(f"privacy gate {name}: approved without reviewed_by and reviewed_at")

@@ -80,6 +80,7 @@ class CommandCenter:
     models: Any = None
     sources_repo: Any = None
     repositories: Any = None
+    conversations: Any = None
 
     def workflow_engine(self) -> Any:
         from .workflows import WorkflowEngine
@@ -179,6 +180,9 @@ class CommandCenter:
                  external_executor=external, internal_executor=internal, clock=clock, alerts=alerts, kpis=kpis,
                  knowledge=knowledge, usage=usage, escalations=escalations, idempotency=idem, read_tools=read_tools,
                  models=models, sources_repo=repo("sources"), repositories=repositories)
+        from .conversations import ConversationService
+        cc.conversations = ConversationService(policy.organization_id, audit, clock=clock,
+                                               **opt(conversations=repo("conversations"), messages=repo("messages")))
         if models is not None and providers is not None:
             from .context import ContextAssembler
             from .runtime import AgentRuntime

@@ -26,7 +26,7 @@ from .agents import AgentProfile, AgentRegistry
 from .approvals import Approval, ApprovalEngine
 from .audit import AuditLogger, EventType
 from .common import ActorType, RiskClass, StrEnum, new_id
-from .errors import CommandCenterError, UnknownToolError
+from .errors import ApprovalNotExecutableError, CommandCenterError, PermissionDeniedError, UnknownToolError
 from .executors import ToolExecutor, ToolInvocation, ToolResult, ToolStatus
 from .retries import RetryClass, run_with_retries, write_retry_allowed
 from .policy import OrganizationPolicy
@@ -42,6 +42,7 @@ class ActionStatus(StrEnum):
     EXECUTED = "EXECUTED"
     FAILED = "FAILED"
     EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
+    OUTCOME_UNKNOWN = "EXECUTION_UNKNOWN"     # alias (Part 55 name)
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,10 @@ class ActionOutcome:
     result: ToolResult | None = None
 
 
-_LIVE_APPROVAL = (ApprovalStatus.PENDING, ApprovalStatus.APPROVED, ApprovalStatus.EXECUTED)
+# Statuses whose amount may be (or may have been) committed. OUTCOME_UNKNOWN counts: the money
+# may have moved, so it must not open room under the split-action threshold.
+_LIVE_APPROVAL = (ApprovalStatus.PENDING, ApprovalStatus.APPROVED, ApprovalStatus.EXECUTED,
+                  ApprovalStatus.EXECUTION_UNKNOWN)
 
 
 @dataclass
@@ -122,14 +126,23 @@ class ActionGateway:
                                    "source_ids": list(result.source_ids)})
 
     def _execute_once(self, inv: ToolInvocation, spec) -> ToolResult:
+        external = spec.category in (ToolCategory.EXTERNAL, ToolCategory.HIGH_RISK)
         try:
             result = self.executor.execute(inv)
         except Exception as exc:
-            if spec.category in (ToolCategory.EXTERNAL, ToolCategory.HIGH_RISK):
+            if external:
                 # The external system may or may not have acted: never call this a failure.
                 result = ToolResult(False, error=f"{type(exc).__name__}: {exc}", status=ToolStatus.EXECUTION_UNKNOWN)
             else:  # internal/read tools are local; a crash means nothing was committed
                 result = ToolResult(False, error=f"executor raised {type(exc).__name__}: {exc}")
+        if not isinstance(result, ToolResult):
+            # malformed / indeterminate executor response
+            result = ToolResult(False, error=f"malformed executor response ({type(result).__name__})",
+                                status=ToolStatus.EXECUTION_UNKNOWN if external else ToolStatus.ERROR)
+        elif external and result.success and not result.result_ref:
+            # "success" without a provider reference cannot be proven
+            result = ToolResult(False, error="provider reported success without a reference; outcome cannot be proven",
+                                status=ToolStatus.EXECUTION_UNKNOWN, data=result.data, mock=result.mock)
         return replace(result, tool_call_id=result.tool_call_id or inv.tool_call_id,
                        tool_name=inv.tool_name, executed_at=result.executed_at or self.approvals.clock())
 
@@ -269,6 +282,51 @@ class ActionGateway:
         return ActionOutcome(ActionStatus.EXECUTED if result.success else ActionStatus.FAILED, tool_name,
                              "executed under approval" if result.success else (result.error or "execution failed"),
                              approval_id=approval_id, result=result)
+
+    def recover_stale_executions(self, older_than: timedelta) -> list[Approval]:
+        """Crash recovery: in-flight executions with no recorded outcome become OUTCOME_UNKNOWN
+        (alert + reconciliation task via on_execution_unknown). Nothing is retried."""
+        recovered = self.approvals.recover_stale_executions(older_than)
+        for a in recovered:
+            self.audit.record(EventType.TOOL_EXECUTION_UNKNOWN, organization_id=a.organization_id,
+                              actor_type=ActorType.SYSTEM, actor_id="gateway", agent_id=a.agent_id, run_id=a.run_id,
+                              object_type="tool", object_id=a.tool_name,
+                              payload={"approval_id": a.approval_id, "status": "EXECUTION_UNKNOWN",
+                                       "reason": "recovered in-flight execution"})
+            if self.on_execution_unknown is not None:
+                self.on_execution_unknown(a, ToolResult(False, error=a.execution_error,
+                                                        status=ToolStatus.EXECUTION_UNKNOWN))
+        return recovered
+
+    def request_reexecution(self, approval_id: str, principal: Any) -> Approval:
+        """After a human reconciled an approval as CONFIRMED_NOT_EXECUTED, request a NEW approval
+        for the same action. The original approval is never reused; risk is re-classified now."""
+        from .approvals import ReconciliationOutcome
+        original = self.approvals.get(approval_id)
+        if original.reconciliation_outcome is not ReconciliationOutcome.CONFIRMED_NOT_EXECUTED:
+            raise ApprovalNotExecutableError("re-execution is only possible after CONFIRMED_NOT_EXECUTED")
+        if not getattr(principal, "is_human", False) or principal.organization_id != original.organization_id:
+            raise PermissionDeniedError("re-execution is requested by a human of the same organization")
+        if self.approvals.repo.list(lambda a: a.supersedes == approval_id):
+            raise ApprovalNotExecutableError("a replacement approval already exists for this action")
+        agent = self.registry.get_agent(original.agent_id)
+        problem = self._permission_problem(agent, original.tool_name)
+        if problem:
+            raise PermissionDeniedError(problem)
+        assessment = classify_action(original.tool_name, original.payload, RiskContext(
+            self.policy, original.risk_class, self.tools, self._prior_amount(agent.agent_id, original.tool_name)))
+        new = self.approvals.request_approval(
+            organization_id=original.organization_id, run_id=original.run_id, agent_id=original.agent_id,
+            tool_name=original.tool_name, action_type=original.action_type, payload=original.payload,
+            risk_class=assessment.final_class, reason=f"re-execution after confirmed non-execution of {approval_id}",
+            reversible=original.reversible, requested_by=original.agent_id,
+            financial_impact=original.financial_impact)
+        new = self.approvals.repo.update(replace(new, supersedes=approval_id), expected_version=new.version)
+        self.audit.record(EventType.APPROVAL_REEXECUTION_REQUESTED, organization_id=new.organization_id,
+                          actor_type=ActorType.HUMAN, actor_id=principal.principal_id, agent_id=new.agent_id,
+                          run_id=new.run_id, object_type="approval", object_id=new.approval_id,
+                          payload={"supersedes": approval_id, "risk_class": new.risk_class.value})
+        return new
 
     def resume_if_unblocked(self, run_id: str) -> None:
         run = self.runs.get(run_id)

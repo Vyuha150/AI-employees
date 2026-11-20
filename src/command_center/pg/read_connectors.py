@@ -14,13 +14,14 @@ synthesized. Rows older than the connector's max_age make the result STALE.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
 import psycopg
 
 from ..common import Clock, utc_now
+from ..connectors import COMMON_COLUMNS, CONTRACTS, LEGACY_COLUMNS
 from ..executors import ToolInvocation, ToolResult, ToolStatus
 from ..read_tools import DEFAULT_ROW_LIMIT, rows_result, unavailable
 from .database import Database
@@ -29,34 +30,87 @@ VIEW_TOOLS = {"read_customers": "customers", "read_leads": "leads", "read_opport
               "read_projects": "projects", "read_vendors": "vendors", "read_financial_summary": "financial_summary"}
 
 
+def view_columns(cur, view: str) -> set[str]:
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'connector' "
+                "AND table_name = %s", (view,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def record_status(db: Database, org_uuid: str, view: str, *, error: str | None) -> None:
+    with db.cursor() as cur:
+        if error is None:
+            cur.execute("INSERT INTO connector_status (organization_id, view_name, last_success_at) VALUES (%s, %s, now()) "
+                        "ON CONFLICT (organization_id, view_name) DO UPDATE SET last_success_at = now(), "
+                        "updated_at = now()", (org_uuid, view))
+        else:
+            cur.execute("INSERT INTO connector_status (organization_id, view_name, last_error_at, last_error) "
+                        "VALUES (%s, %s, now(), %s) ON CONFLICT (organization_id, view_name) DO UPDATE SET "
+                        "last_error_at = now(), last_error = EXCLUDED.last_error, updated_at = now()",
+                        (org_uuid, view, error[:500]))
+
+
 @dataclass
 class ViewReadConnector:
+    """Reads one organization-owned connector view under its contract (connectors.CONTRACTS)."""
+
     db: Database
     org_uuid: str
     view: str
-    max_age: timedelta | None = timedelta(days=2)
+    max_age: timedelta | None = None
     clock: Clock = utc_now
+
+    def __post_init__(self) -> None:
+        if self.max_age is None:
+            self.max_age = CONTRACTS[self.view].max_age if self.view in CONTRACTS else timedelta(days=2)
 
     def fetch(self, inv: ToolInvocation) -> ToolResult:
         limit = min(int(inv.payload.get("limit", DEFAULT_ROW_LIMIT)), DEFAULT_ROW_LIMIT)
+        contract = CONTRACTS.get(self.view)
+        warnings: list[str] = []
         with self.db.cursor() as cur:
             cur.execute("SELECT to_regclass(%s)", (f"connector.{self.view}",))
             if cur.fetchone()[0] is None:
                 return unavailable(inv, f"connector view connector.{self.view} is not configured; data unavailable")
+            cols = view_columns(cur, self.view)
+            if set(COMMON_COLUMNS) <= cols:
+                id_col, ts_col, sys_col = "source_record_id", "source_updated_at", "source_system"
+                missing = [c for c in (contract.business_columns if contract else ()) if c not in cols]
+                if missing:
+                    warnings.append(f"view lacks contract columns {missing}")
+            elif set(LEGACY_COLUMNS) <= cols:
+                id_col, ts_col, sys_col = "record_id", "updated_at", None
+                warnings.append("legacy connector view (record_id/updated_at); add source_system, source_record_id, "
+                                "source_updated_at to meet the contract")
+            else:
+                missing = [c for c in COMMON_COLUMNS if c not in cols]
+                err = f"connector.{self.view} does not satisfy the contract; missing {missing}"
+                record_status(self.db, self.org_uuid, self.view, error=err)
+                return ToolResult(False, error=err, status=ToolStatus.ERROR, tool_name=inv.tool_name)
             try:
-                cur.execute(f"SELECT to_jsonb(v), v.record_id, v.updated_at FROM connector.{self.view} v "
-                            "WHERE v.organization_id = %s ORDER BY v.updated_at DESC LIMIT %s",
+                cur.execute(f"SELECT to_jsonb(v), v.{id_col}::text, v.{ts_col}"
+                            f"{', v.' + sys_col if sys_col else ', NULL'} FROM connector.{self.view} v "
+                            f"WHERE v.organization_id = %s ORDER BY v.{ts_col} DESC NULLS LAST LIMIT %s",
                             (self.org_uuid, limit))
+                rows = cur.fetchall()
             except psycopg.Error as exc:
-                return ToolResult(False, error=f"connector view error: {exc.sqlstate}", status=ToolStatus.ERROR,
-                                  tool_name=inv.tool_name)
-            rows = cur.fetchall()
+                err = f"connector view error: {exc.sqlstate}"
+                record_status(self.db, self.org_uuid, self.view, error=err)
+                return ToolResult(False, error=err, status=ToolStatus.ERROR, tool_name=inv.tool_name)
         if not rows:
             return unavailable(inv, f"connector.{self.view} returned no rows for this organization")
-        data = [{k: v for k, v in r[0].items() if k != "organization_id"} for r in rows]
-        newest = max(r[2] for r in rows if r[2] is not None) if any(r[2] for r in rows) else None
-        return rows_result(inv, data, [f"db:{self.view}:{r[1]}" for r in rows], freshness=newest,
-                           max_age=self.max_age, limit=limit, now=self.clock())
+        retrieved = self.clock().isoformat()
+        data = []
+        for rec, rid, ts, system in rows:
+            item = {k: v for k, v in rec.items() if k != "organization_id"}
+            item.update({"organization_id": inv.organization_id, "source_system": system or "unspecified",
+                         "source_record_id": rid, "source_updated_at": ts.isoformat() if ts else None,
+                         "retrieved_at": retrieved})
+            data.append(item)
+        newest = max((r[2] for r in rows if r[2] is not None), default=None)
+        record_status(self.db, self.org_uuid, self.view, error=None)
+        result = rows_result(inv, data, [f"db:{self.view}:{r[1]}" for r in rows], freshness=newest,
+                             max_age=self.max_age, limit=limit, now=self.clock())
+        return replace(result, warnings=tuple(warnings)) if warnings else result
 
 
 @dataclass

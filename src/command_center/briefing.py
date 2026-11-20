@@ -33,6 +33,7 @@ from .outputs import OutputKind
 from .sources import AuthorityLevel, SourceRecord, SourceType
 from .state_machines import RunStatus
 
+# Default participants; the organization policy `briefing` section is authoritative.
 DAILY_SPECIALISTS = ("cfo", "sales_director", "operations", "customer_success", "marketing_director")
 DAILY_DOMAINS = {"cfo": ("cash", "costs", "revenue"), "sales_director": ("pipeline", "revenue"),
                  "operations": ("operations",), "customer_success": ("customers",),
@@ -169,12 +170,15 @@ class BriefingService:
         if not fresh:
             return BriefResult("DUPLICATE", rec.result_ref, {}, (), ())
         day = brief_date.isoformat()
-        data = self._specialist("data_analyst", principal, f"Daily data validation for {day}: check freshness and "
+        data = self._specialist(cc.policy.briefing.daily_data_agent, principal,
+                                f"Daily data validation for {day}: check freshness and "
                                 "quality of the data behind today's management brief.")
-        specialists = [self._specialist(a, principal, f"Daily {', '.join(DAILY_DOMAINS[a])} review for {day}: "
-                                        "return a concise structured ANALYSIS.") for a in DAILY_SPECIALISTS]
+        bp = cc.policy.briefing                       # explicit participants (policy), never dynamic
+        specialists = [self._specialist(a, principal, f"Daily {', '.join(DAILY_DOMAINS.get(a, ('business',)))} "
+                                        f"review for {day}: return a concise structured ANALYSIS.")
+                       for a in bp.daily_specialists]
         dq = self._data_quality(data, specialists)
-        invoked = ("data_analyst",) + DAILY_SPECIALISTS + ("chief_of_staff",)
+        invoked = (bp.daily_data_agent,) + tuple(bp.daily_specialists) + ("chief_of_staff",)
         cos = cc.runs.create_run("chief_of_staff", principal, f"Daily brief {day}")
         ctx = RunContext("Daily brief synthesis", (), (), f"Daily brief {day}", principal,
                          requested_agent_id="chief_of_staff")
@@ -202,15 +206,22 @@ class BriefingService:
         events = [e for e in cc.audit.store.events() if e.timestamp.date().isoformat() >= lo
                   and e.timestamp.date() <= end]
         agents_active = {e.agent_id for e in events}
-        out = list(WEEKLY_CORE)
-        product_kpis = {k.name for k in cc.registry.get_profile("product_analyst").kpis}
-        if "product_analyst" in agents_active or any(cc.kpis.latest(cc.policy.organization_id, k) for k in product_kpis):
-            out.append("product_analyst")
-        if "procurement" in agents_active or any(a.tool_name == "create_purchase_order"
-                                                 for a in cc.approvals.repo.list()):
-            out.append("procurement")
-        if cc.policy.privacy_gate_open("read_people_summary") and principal.has("view:people_data"):
-            out.append("people_performance")
+        bp = cc.policy.briefing
+        out = list(bp.weekly_core)
+
+        def holds(agent: str, condition: str) -> bool:
+            if condition == "PRODUCT_ACTIVITY":
+                kpis = {k.name for k in cc.registry.get_profile(agent).kpis}
+                return agent in agents_active or any(cc.kpis.latest(cc.policy.organization_id, k) for k in kpis)
+            if condition == "PURCHASE_ACTIVITY":
+                return agent in agents_active or bool(cc.approvals.repo.query(
+                    {"tool_name": "create_purchase_order"}, limit=1))
+            if condition == "PEOPLE_AUTHORIZED":
+                return cc.policy.privacy_gate_open("read_people_summary") and principal.has("view:people_data")
+            return False
+        for agent, condition in bp.weekly_conditional.items():
+            if holds(agent, condition):
+                out.append(agent)
         return tuple(out)
 
     def generate_weekly_review(self, principal: Principal, week_start: date) -> BriefResult:
@@ -281,6 +292,12 @@ class ScheduledWorkflowDispatcher:
         svc = BriefingService(self.cc, self.runtime)
         if job.workflow == "daily_brief":
             return svc.generate_daily_brief(self.run_as, local.date()).output_id
+        if job.workflow == "escalation_evaluation":
+            from .escalations import collect_signals
+            signals, notes = collect_signals(self.cc.read_tools, self.cc.policy.organization_id, self.cc.clock())
+            report = self.cc.escalations.evaluate(signals=signals)
+            self.cc.gateway.recover_stale_executions(timedelta(minutes=30))   # crash recovery (Part 55)
+            return f"escalations:{len(report.triggered)}:not_evaluable:{len(report.not_evaluable) + len(notes)}"
         if job.workflow == "weekly_management_review":
             return svc.generate_weekly_review(self.run_as, local.date() - timedelta(days=local.weekday())).output_id
         agent = REVIEW_WORKFLOW_AGENTS.get(job.workflow)

@@ -45,6 +45,8 @@ class AgentRun:
     model_name: str | None = None
     fallback_used: bool = False
     fallback_from: str | None = None
+    fallback_reason: str | None = None
+    fallback_at: datetime | None = None
     cost_unknown: bool = False
     version: int = 0
 
@@ -172,11 +174,16 @@ class RunService:
                 f"cost {updated.cost_used:.4f}/{limits.max_cost_per_run} {limits.currency})")
         return updated
 
-    def set_model(self, run_id: str, *, provider: str, model: str, fallback_from: str | None = None) -> AgentRun:
+    def set_model(self, run_id: str, *, provider: str, model: str, fallback_from: str | None = None,
+                  fallback_reason: str | None = None) -> AgentRun:
         run = self.repo.get(run_id)
+        switched = fallback_from is not None
         return self.repo.update(replace(run, model_provider=provider, model_name=model,
-                                        fallback_used=run.fallback_used or fallback_from is not None,
-                                        fallback_from=fallback_from or run.fallback_from),
+                                        fallback_used=run.fallback_used or switched,
+                                        fallback_from=fallback_from or run.fallback_from,
+                                        fallback_reason=(fallback_reason or run.fallback_reason),
+                                        fallback_at=self.clock() if switched and run.fallback_at is None
+                                        else run.fallback_at),
                                 expected_version=run.version)
 
     def mark_cost_unknown(self, run_id: str) -> AgentRun:

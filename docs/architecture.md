@@ -290,3 +290,75 @@ Every step writes an append-only, hash-chained audit event.
   are mocked. Connector views (`connector.*`) must be created per organization.
 - **Spec cut off.** The Part 55 text was cut off after "for cases where an external tool times out". Its
   implementation covers timeouts and exceptions in external and high-risk tools (see above).
+
+---
+
+# Phase 4: Production hardening
+
+## Additional modules
+
+| Module | Responsibility |
+|---|---|
+| `adapters.py` | External write adapter contracts: messaging, meetings, CRM, purchase orders, marketing. All are disabled by default; mock adapters report `mock=true` |
+| `jobs.py`, `pg/jobs.py` | Durable job queue contract. The in-memory queue is for development and tests; `PgJobQueue` is for production (`FOR UPDATE SKIP LOCKED`, unique idempotency keys) |
+| `conversations.py` | Conversations, participants and immutable messages, with pagination and credential redaction |
+| `connectors.py`, `pg/read_connectors.py`, `pg/diagnostics.py` | Connector view contracts, contract-checked reads, connector status, migration state |
+| `readiness.py` | `ai-command-center readiness`: READY / DEGRADED / NOT_READY |
+| `migrations/0002_operations.sql` | Jobs, conversations and messages, connector status, query indexes |
+
+## Decisions
+
+1. **Uncertain execution (Part 55 completed).** `OUTCOME_UNKNOWN` is the Part 55 name for the existing
+   `EXECUTION_UNKNOWN` state: an enum alias with the same stored value, so existing data, constraints and
+   tests stay valid.
+   - **What counts as unknown:** timeouts, connection loss after send, malformed responses, success without
+     a provider reference, accepted-but-unconfirmed, indeterminate provider states, and executions found in
+     flight after a crash (`recover_stale_executions`).
+   - **What follows:** no retry, a CRITICAL alert, a reconciliation task and an audit event.
+   - **Reconciliation:** `CONFIRMED_EXECUTED`, `CONFIRMED_NOT_EXECUTED` or `UNRESOLVED`, recorded only by a
+     human with the approval's role and an evidence reference.
+   - **Re-execution:** after `CONFIRMED_NOT_EXECUTED`, `request_reexecution` creates a **new** approval that
+     records `supersedes`. The original is spent, and at most one replacement is allowed.
+   - **Split-purchase protection:** unknown-outcome amounts still count toward the cumulative threshold.
+   - **Safe failures:** only a provably unsent request (connection refused, DNS failure) is a safe failure.
+2. **Queue safety.** One job per `(organization_id, idempotency_key)`.
+   - `EXTERNAL_WRITE` jobs run at most once; a database CHECK enforces it. They are never retried or
+     reclaimed; an abandoned one becomes `ABANDONED` for a human.
+   - `READ_ONLY` jobs retry and are reclaimed per their limits.
+   - An agent-run job is reclaimed only if its run never started. Agent runs are not declared idempotent, so
+     failures do not retry.
+   - Command submissions with a client idempotency key return the original receipt.
+3. **Scheduled escalation.** `scheduler.escalation_cron` in organization policy creates the system job
+   `escalation_evaluation`. The job evaluates policy rules only, using connector signals for deals, customer
+   health and blocked projects, and also runs crash recovery for in-flight executions. Escalation text in
+   agent profiles remains prompt guidance.
+   - **Duplicate suppression:** an alert stays open per `(rule, object)` condition; repeated evaluations,
+     including on later days, do not create another alert until it is resolved.
+4. **Conversations.** Messages are append-only: there is no update API and a database trigger rejects
+   changes. Credentials are redacted before storage, and the redaction is audited. History is not fed to
+   the model; the context assembler alone selects context.
+5. **Database-side queries.** `Repository.query(filters, order_by, limit, offset)` is implemented in memory
+   and in PostgreSQL. Filters are allow-listed per table, so an unknown field raises; there is no generic
+   SQL. Results are always scoped to the bound organization. The audit log pages by `org_sequence`.
+   Compound indexes all lead with `organization_id`.
+6. **Model fallback.** It stays OFF. When configured and used, the audit event and the run record carry the
+   requested model, the fallback model, the reason, the timestamp and the run id.
+7. **Brief workflows.** Participants come from organization policy `briefing` and are never added
+   dynamically. `people_performance` may only join under `PEOPLE_AUTHORIZED`. Each specialist run is
+   independently permissioned, budgeted and audited, and the delegation limit (4) is unchanged.
+8. **People data.** `read_people_summary` stays disabled. Readiness reports its status.
+
+## Remaining production blockers (Phase 4)
+
+- **Configuration review.** Security-critical and financial placeholders must be reviewed by the
+  organization; production readiness stays NOT_READY until then.
+- **Connector views.** No connector views ship. Each organization must create them, or connector-backed
+  reads stay UNAVAILABLE.
+- **External adapters.** No real adapters exist; external writes are disabled or mocked. Each real adapter
+  needs a provider integration, credential handling through the environment, and a review.
+- **Authentication.** There is no authenticated HTTP/RPC surface yet. `ApiService` expects the caller to
+  pass an authenticated `Principal`.
+- **Worker process.** No long-running worker or scheduler process is packaged. `JobWorker.run_once` and
+  `Scheduler.tick` must be driven by a deployment process manager.
+- **Cross-organization queries.** Queue claims are cross-organization by design (infrastructure). Per-tenant
+  worker pools, if needed, filter by job type or organization.

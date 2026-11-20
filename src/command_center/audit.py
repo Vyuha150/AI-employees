@@ -57,6 +57,18 @@ class EventType(StrEnum):
     APPROVAL_EXECUTION_FAILED = "approval.execution_failed"
     APPROVAL_EXECUTION_UNKNOWN = "approval.execution_unknown"
     APPROVAL_RECONCILED = "approval.reconciled"
+    APPROVAL_RECONCILIATION_UNRESOLVED = "approval.reconciliation_unresolved"
+    APPROVAL_REEXECUTION_REQUESTED = "approval.reexecution_requested"
+    JOB_ENQUEUED = "job.enqueued"
+    JOB_CLAIMED = "job.claimed"
+    JOB_SUCCEEDED = "job.succeeded"
+    JOB_FAILED = "job.failed"
+    JOB_CANCELLED = "job.cancelled"
+    JOB_ABANDONED = "job.abandoned"
+    CONVERSATION_CREATED = "conversation.created"
+    MESSAGE_CREATED = "message.created"
+    MESSAGE_REDACTED = "message.redacted"
+    ESCALATION_SUPPRESSED = "escalation.suppressed"
 
     TASK_CREATED = "task.created"
     TASK_UPDATED = "task.updated"
@@ -260,6 +272,16 @@ class InMemoryAuditStore:
         with self._lock:
             snapshot = list(self._events)
         verify_events(snapshot)
+
+    def page(self, *, after_sequence: int = 0, limit: int = 100, **filters: Any) -> list[AuditEvent]:
+        """Chronological page of events with sequence > after_sequence."""
+        out = []
+        for e in self.events(**filters):
+            if e.sequence > after_sequence:
+                out.append(e)
+                if len(out) >= max(1, min(limit, 500)):
+                    break
+        return out
 
 
 def verify_events(events: Iterable[AuditEvent]) -> None:

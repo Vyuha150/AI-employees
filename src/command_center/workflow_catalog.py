@@ -11,8 +11,11 @@ DAILY_WORKFLOWS = (
     "end_of_day_reconciliation",
 )
 WEEKLY_WORKFLOWS = ("weekly_management_review",)
+SYSTEM_WORKFLOWS = ("escalation_evaluation",)   # scheduled from organization policy, not agent profiles
 
-KNOWN_WORKFLOWS = frozenset(DAILY_WORKFLOWS + WEEKLY_WORKFLOWS)
+KNOWN_WORKFLOWS = frozenset(DAILY_WORKFLOWS + WEEKLY_WORKFLOWS + SYSTEM_WORKFLOWS)
+ESCALATION_JOB_ID = "escalation_evaluation"
+ESCALATION_JOB_OWNER = "chief_of_staff"         # coordination owner; the job runs no model
 
 # Specialist review workflows -> the agent that runs them.
 REVIEW_WORKFLOW_AGENTS = {

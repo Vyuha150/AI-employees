@@ -43,6 +43,9 @@ class TableSpec:
     key_column: str = "id"
     order_by: str = "created_at"
     after_insert: Callable[[Any, Any, str], None] | None = None     # (cursor, record, org_uuid)
+    after_update: Callable[[Any, Any, str], None] | None = None
+    # record field -> column for database-side filtering/ordering (allow-list; nothing else is accepted)
+    filters: Mapping[str, str] | None = None
 
 
 class PgRepository(Generic[T]):
@@ -55,7 +58,7 @@ class PgRepository(Generic[T]):
 
     def _row(self, rec: Any) -> dict[str, Any]:
         data = encode(rec)
-        cols = {k: (Jsonb(v) if isinstance(v, (dict, list)) and k != "permissions" else v)
+        cols = {k: (Jsonb(v) if isinstance(v, (dict, list)) and k not in ("permissions", "attachment_ids") else v)
                 for k, v in self.spec.columns(rec).items()}
         return {"record": Jsonb(data), **cols}
 
@@ -110,7 +113,44 @@ class PgRepository(Generic[T]):
                 if found is None:
                     raise NotFoundError(f"{self.spec.table}: {key!r} not found")
                 raise ConcurrencyError(f"{self.spec.table}: {key!r} expected version {expected_version}, found {found[0]}")
+            if self.spec.after_update:
+                self.spec.after_update(cur, stored, self.org_uuid)
         return stored
+
+    _OPS = {"": "=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+    def query(self, filters: Mapping[str, Any] | None = None, *, order_by: str | None = None,
+              limit: int = 50, offset: int = 0) -> list[T]:
+        """Database-side filtering, ordering and pagination, always scoped to this organization.
+        Only fields in the table's filter allow-list are accepted (fail closed)."""
+        from ..storage import clamp_limit
+        allowed = dict(self.spec.filters or {})
+        where, params = ["organization_id = %s"], [self.org_uuid]
+        for key, value in (filters or {}).items():
+            name, _, op = key.partition("__")
+            if name not in allowed:
+                raise ValueError(f"{self.spec.table}: filtering on {name!r} is not supported")
+            col = allowed[name]
+            if op == "in":
+                where.append(f"{col} = ANY(%s)")
+                params.append([getattr(v, "value", v) for v in value])
+            elif op in self._OPS:
+                where.append(f"{col} {self._OPS[op]} %s")
+                params.append(getattr(value, "value", value))
+            else:
+                raise ValueError(f"unsupported filter operator {op!r}")
+        order_sql = self.spec.order_by
+        if order_by:
+            name = order_by.lstrip("-")
+            if name not in allowed:
+                raise ValueError(f"{self.spec.table}: ordering on {name!r} is not supported")
+            order_sql = f"{allowed[name]} {'DESC' if order_by.startswith('-') else 'ASC'}, {self.spec.key_column}"
+        sql = (f"SELECT record, version FROM {self.spec.table} WHERE {' AND '.join(where)} ORDER BY {order_sql} "
+               f"LIMIT %s OFFSET %s")
+        with self.db.cursor() as cur:
+            cur.execute(sql, (*params, clamp_limit(limit), max(0, int(offset))))
+            rows = cur.fetchall()
+        return [self._decode(r[0], r[1]) for r in rows]
 
     def list(self, predicate: Callable[[T], bool] | None = None) -> list[T]:
         with self.db.cursor() as cur:
@@ -137,8 +177,16 @@ def _workflow_steps(cur, d, org_uuid):
                     (org_uuid, d.workflow_id, s.step_id, s.type.value, Jsonb(encode(s.config)), s.next))
 
 
+def _participants(cur, conv, org_uuid):
+    for part in conv.participants:
+        cur.execute("INSERT INTO conversation_participants (organization_id, conversation_id, actor_type, actor_id) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (org_uuid, conv.conversation_id, part.actor_type.value, part.actor_id))
+
+
 def specs() -> dict[str, TableSpec]:
     from ..alerts import Alert, Notification
+    from ..conversations import Conversation, Message
     from ..approvals import Approval
     from ..kpis import KpiSnapshot
     from ..knowledge import KnowledgeChunk, KnowledgeDocument
@@ -154,25 +202,25 @@ def specs() -> dict[str, TableSpec]:
 
     v = lambda e: None if e is None else getattr(e, "value", e)
     return {
-        "runs": TableSpec("agent_runs", AgentRun, "run_id", lambda r: {
+        "runs": TableSpec("agent_runs", AgentRun, "run_id", filters={"agent_id": "agent_key", "status": "status", "created_at": "created_at", "triggered_by": "triggered_by", "parent_run_id": "parent_run_id"}, columns=lambda r: {
             "agent_key": r.agent_id, "status": r.status.value, "triggered_by": r.triggered_by,
             "parent_run_id": r.parent_run_id, "depth": r.depth, "retry_of": r.retry_of, "tokens_used": r.tokens_used,
             "cost_used": r.cost_used, "model_provider": r.model_provider, "model_name": r.model_name,
             "fallback_used": r.fallback_used, "created_at": r.created_at}),
-        "tasks": TableSpec("tasks", Task, "task_id", lambda t: {
+        "tasks": TableSpec("tasks", Task, "task_id", filters={"status": "status", "owner": "owner", "priority": "priority", "created_at": "created_at", "due_date": "due_date"}, columns=lambda t: {
             "title": t.title, "owner": t.owner, "owner_type": t.owner_type.value, "priority": t.priority.value,
             "status": t.status.value, "risk_level": t.risk_level.value, "due_date": t.due_date,
             "source_run_id": _uuid_or_none(t.source_run_id), "created_at": t.created_at}, after_insert=_task_deps),
-        "approvals": TableSpec("approvals", Approval, "approval_id", lambda a: {
+        "approvals": TableSpec("approvals", Approval, "approval_id", filters={"status": "status", "agent_id": "agent_key", "run_id": "run_id", "risk_class": "risk_class", "requested_at": "requested_at", "tool_name": "tool_name"}, columns=lambda a: {
             "run_id": a.run_id, "agent_key": a.agent_id, "tool_name": a.tool_name, "action_type": a.action_type,
             "payload_hash": a.payload_hash, "risk_class": a.risk_class.value, "required_role": a.required_role,
             "status": a.status.value, "execution_status": a.execution_status.value, "requested_by": a.requested_by,
             "approved_by": a.approved_by, "requested_at": a.requested_at, "expires_at": a.expires_at},
             order_by="requested_at"),
-        "outputs": TableSpec("outputs", AgentOutput, "output_id", lambda o: {
+        "outputs": TableSpec("outputs", AgentOutput, "output_id", filters={"agent_id": "agent_key", "kind": "kind", "validity": "validity", "run_id": "run_id", "created_at": "created_at"}, columns=lambda o: {
             "run_id": o.run_id, "agent_key": o.agent_id, "kind": o.kind.value, "validity": o.validity.value,
             "content_hash": o.content_hash, "ingested": o.ingested, "created_at": o.created_at}),
-        "recommendations": TableSpec("recommendations", Recommendation, "recommendation_id", lambda r: {
+        "recommendations": TableSpec("recommendations", Recommendation, "recommendation_id", filters={"status": "status", "source_agent": "source_agent", "created_at": "created_at"}, columns=lambda r: {
             "source_agent": r.source_agent, "run_id": _uuid_or_none(r.run_id), "status": r.status.value,
             "impact_category": r.impact_category.value, "confidence": r.confidence.value, "fingerprint": r.fingerprint,
             "decided_by": r.decided_by, "created_at": r.created_at}),
@@ -186,13 +234,13 @@ def specs() -> dict[str, TableSpec]:
         "delegations": TableSpec("delegations", Delegation, "delegation_id", lambda d: {
             "parent_run_id": d.parent_run_id, "child_run_id": d.child_run_id, "requested_by_agent": d.requested_by_agent,
             "target_agent": d.target_agent_id, "status": d.status.value, "created_at": d.created_at}),
-        "alerts": TableSpec("alerts", Alert, "alert_id", lambda a: {
+        "alerts": TableSpec("alerts", Alert, "alert_id", filters={"status": "status", "severity": "severity", "category": "category", "created_at": "created_at"}, columns=lambda a: {
             "severity": a.severity.value, "category": a.category, "title": a.title, "status": a.status.value,
             "dedupe_key": a.dedupe_key, "created_at": a.created_at}),
         "notifications": TableSpec("notifications", Notification, "notification_id", lambda n: {
             "recipient": n.recipient, "channel": n.channel, "alert_id": n.alert_id, "status": n.status.value,
             "created_at": n.created_at}),
-        "kpis": TableSpec("kpi_snapshots", KpiSnapshot, "snapshot_id", lambda s: {
+        "kpis": TableSpec("kpi_snapshots", KpiSnapshot, "snapshot_id", filters={"kpi": "kpi_key", "observed_at": "observed_at", "recorded_at": "created_at"}, columns=lambda s: {
             "kpi_key": s.kpi, "value": s.value, "unit": s.unit, "observed_at": s.observed_at,
             "source_reference": s.source_reference, "recorded_by": s.recorded_by, "run_id": _uuid_or_none(s.run_id),
             "created_at": s.recorded_at}),
@@ -209,6 +257,19 @@ def specs() -> dict[str, TableSpec]:
         "knowledge_chunks": TableSpec("knowledge_chunks", KnowledgeChunk, "chunk_id", lambda c: {
             "document_id": c.document_id, "ordinal": c.ordinal, "text": c.text,
             "embedding": None if c.embedding is None else list(c.embedding)}, order_by="document_id, ordinal"),
+        "conversations": TableSpec("conversations", Conversation, "conversation_id", filters={
+            "status": "status", "updated_at": "updated_at", "created_at": "created_at",
+            "primary_agent_id": "primary_agent_id"}, columns=lambda c: {
+            "title": c.title, "created_by": c.created_by, "primary_agent_id": c.primary_agent_id,
+            "status": c.status.value, "created_at": c.created_at, "updated_at": c.updated_at},
+            after_insert=_participants, after_update=_participants),
+        "messages": TableSpec("messages", Message, "message_id", filters={
+            "conversation_id": "conversation_id", "seq": "seq", "created_at": "created_at", "run_id": "run_id"},
+            order_by="conversation_id, seq", columns=lambda m: {
+            "conversation_id": m.conversation_id, "seq": m.seq, "sender_type": m.sender_type.value,
+            "sender_id": m.sender_id, "agent_id": m.agent_id, "content": m.content,
+            "structured_content": None if m.structured_content is None else dict(m.structured_content),
+            "attachment_ids": list(m.attachment_ids), "run_id": _uuid_or_none(m.run_id), "created_at": m.created_at}),
         "workflows": TableSpec("workflows", WorkflowDefinition, "workflow_id", lambda d: {
             "name": d.name, "definition_version": d.definition_version, "status": d.status.value,
             "created_by": d.created_by}, after_insert=_workflow_steps),
@@ -292,6 +353,25 @@ class PgAuditStore:
 
     def verify_chain(self) -> None:
         verify_events(self._load())
+
+    def page(self, *, after_sequence: int = 0, limit: int = 100, **filters: Any) -> list[AuditEvent]:
+        """Database-side keyset page (organization_id, org_sequence) with scalar filters pushed down."""
+        where, params = " AND org_sequence > %s", [after_sequence]
+        for k in ("event_type", "object_type", "object_id", "agent_id", "run_id"):
+            v = filters.get(k)
+            if v is None:
+                continue
+            col = {"agent_id": "agent_key"}.get(k, k)
+            if k == "run_id":
+                v = _uuid_or_none(v)
+                if v is None:
+                    return []
+            where += f" AND {col} = %s"
+            params.append(getattr(v, "value", v))
+        with self.db.cursor() as cur:
+            cur.execute(f"SELECT body FROM audit_events WHERE organization_id = %s {where} ORDER BY org_sequence "
+                        "LIMIT %s", (self.org_uuid, *params, max(1, min(limit, 500))))
+            return [AuditEvent.from_record(r[0]) for r in cur.fetchall()]
 
 
 class PgIdempotencyStore:

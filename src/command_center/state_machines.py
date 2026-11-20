@@ -147,6 +147,7 @@ class ApprovalStatus(StrEnum):
     EXECUTED = "EXECUTED"
     FAILED = "FAILED"
     EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"   # outcome undetermined; needs human reconciliation
+    OUTCOME_UNKNOWN = "EXECUTION_UNKNOWN"     # alias (Part 55 name); same state, same stored value
 
 
 A = ApprovalStatus

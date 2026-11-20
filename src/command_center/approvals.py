@@ -48,6 +48,12 @@ class ExecutionStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class ReconciliationOutcome(StrEnum):
+    CONFIRMED_EXECUTED = "CONFIRMED_EXECUTED"
+    CONFIRMED_NOT_EXECUTED = "CONFIRMED_NOT_EXECUTED"
+    UNRESOLVED = "UNRESOLVED"
+
+
 @dataclass(frozen=True)
 class Approval:
     approval_id: str
@@ -76,6 +82,9 @@ class Approval:
     execution_result_ref: str | None = None
     execution_error: str | None = None
     executed_at: datetime | None = None
+    execution_started_at: datetime | None = None
+    reconciliation_outcome: ReconciliationOutcome | None = None
+    supersedes: str | None = None          # approval this one replaces (after CONFIRMED_NOT_EXECUTED)
     version: int = 0
 
 
@@ -289,7 +298,8 @@ class ApprovalEngine:
                 if "differs" in check.reason:
                     raise PayloadMismatchError(check.reason)
                 raise ApprovalNotExecutableError(check.reason)
-            a = self.repo.update(replace(a, execution_status=ExecutionStatus.IN_PROGRESS), expected_version=a.version)
+            a = self.repo.update(replace(a, execution_status=ExecutionStatus.IN_PROGRESS,
+                                         execution_started_at=self.clock()), expected_version=a.version)
             self._event(EventType.APPROVAL_EXECUTION_STARTED, a, ActorType.SYSTEM, "system", a.status)
             return a
 
@@ -330,25 +340,62 @@ class ApprovalEngine:
 
     def reconcile(self, approval_id: str, principal: Principal, *, executed: bool, evidence_ref: str,
                   note: str) -> Approval:
-        """A human with the approval's required role records what actually happened, with evidence."""
+        """Backward-compatible form of reconcile_outcome (executed=True/False)."""
+        return self.reconcile_outcome(approval_id, principal,
+                                      ReconciliationOutcome.CONFIRMED_EXECUTED if executed
+                                      else ReconciliationOutcome.CONFIRMED_NOT_EXECUTED,
+                                      evidence_ref=evidence_ref, note=note)
+
+    def reconcile_outcome(self, approval_id: str, principal: Principal, outcome: ReconciliationOutcome, *,
+                          evidence_ref: str, note: str) -> Approval:
+        """A human with the approval's required role records what actually happened, with evidence.
+
+        CONFIRMED_EXECUTED      -> EXECUTED (evidence becomes the result reference)
+        CONFIRMED_NOT_EXECUTED  -> FAILED; the approval is spent. Trying again needs a NEW approval
+                                   (see ActionGateway.request_reexecution); this one is never reused.
+        UNRESOLVED              -> stays OUTCOME_UNKNOWN; the evidence and note are recorded.
+        """
+        outcome = ReconciliationOutcome(outcome)
         if not evidence_ref.strip() or not note.strip():
             raise ApprovalError("reconciliation needs an evidence reference and a note")
         with self._lock:
             a = self.repo.get(approval_id)
             if a.status is not ApprovalStatus.EXECUTION_UNKNOWN:
-                raise ApprovalError("only EXECUTION_UNKNOWN approvals can be reconciled")
+                raise ApprovalError("only OUTCOME_UNKNOWN approvals can be reconciled")
             if not principal.is_human or principal.organization_id != a.organization_id \
                     or a.required_role not in principal.roles:
                 raise PermissionDeniedError("reconciliation requires a human with the approval's required role")
-            target = ApprovalStatus.EXECUTED if executed else ApprovalStatus.FAILED
-            a = self._transition(a, target,
+            payload = {"outcome": outcome.value, "executed": outcome is ReconciliationOutcome.CONFIRMED_EXECUTED,
+                       "evidence_ref": evidence_ref, "note": note}
+            if outcome is ReconciliationOutcome.UNRESOLVED:
+                a = self.repo.update(replace(a, reconciliation_outcome=outcome, decision_note=note),
+                                     expected_version=a.version)
+                self._event(EventType.APPROVAL_RECONCILIATION_UNRESOLVED, a, ActorType.HUMAN, principal.principal_id,
+                            ApprovalStatus.EXECUTION_UNKNOWN, payload)
+                return a
+            executed = outcome is ReconciliationOutcome.CONFIRMED_EXECUTED
+            a = self._transition(a, ApprovalStatus.EXECUTED if executed else ApprovalStatus.FAILED,
                                  execution_status=ExecutionStatus.SUCCEEDED if executed else ExecutionStatus.FAILED,
                                  execution_result_ref=evidence_ref if executed else a.execution_result_ref,
-                                 decision_note=note)
+                                 decision_note=note, reconciliation_outcome=outcome)
             self._event(EventType.APPROVAL_RECONCILED, a, ActorType.HUMAN, principal.principal_id,
-                        ApprovalStatus.EXECUTION_UNKNOWN, {"executed": executed, "evidence_ref": evidence_ref,
-                                                           "note": note})
+                        ApprovalStatus.EXECUTION_UNKNOWN, payload)
             return a
+
+    def stale_executions(self, older_than: timedelta) -> list[Approval]:
+        """Approvals claimed for execution whose outcome was never recorded (e.g. the gateway or
+        worker crashed after dispatch)."""
+        cutoff = self.clock() - older_than
+        return self.repo.list(lambda a: a.execution_status is ExecutionStatus.IN_PROGRESS
+                              and (a.execution_started_at is None or a.execution_started_at <= cutoff))
+
+    def recover_stale_executions(self, older_than: timedelta) -> list[Approval]:
+        """Mark crashed in-flight executions OUTCOME_UNKNOWN. Never marks them failed or retries."""
+        out = []
+        for a in self.stale_executions(older_than):
+            out.append(self.mark_unknown(a.approval_id, "execution was in progress when the gateway or worker "
+                                         "stopped; the provider outcome cannot be proven"))
+        return out
 
     def pending_for_run(self, run_id: str) -> list[Approval]:
         return self.repo.list(lambda a: a.run_id == run_id and a.status is ApprovalStatus.PENDING)

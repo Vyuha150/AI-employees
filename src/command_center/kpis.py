@@ -55,7 +55,12 @@ class KpiService:
         return snap
 
     def history(self, organization_id: str, kpi: str, limit: int = 100) -> list[KpiSnapshot]:
-        rows = self.repo.list(lambda s: s.organization_id == organization_id and s.kpi == kpi)
+        query = getattr(self.repo, "query", None)
+        if query is not None:   # database-side ordering and limit
+            rows = [s for s in query({"kpi": kpi}, order_by="-observed_at", limit=limit)
+                    if s.organization_id == organization_id]
+        else:
+            rows = self.repo.list(lambda s: s.organization_id == organization_id and s.kpi == kpi)
         return sorted(rows, key=lambda s: (s.observed_at, s.recorded_at), reverse=True)[:limit]
 
     def latest(self, organization_id: str, kpi: str) -> KpiSnapshot | None:

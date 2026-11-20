@@ -59,18 +59,26 @@ class EscalationEngine:
     kpis: KpiService
     idempotency: IdempotencyStore = field(default_factory=InMemoryIdempotencyStore)
     clock: Clock = utc_now
+    suppressed: int = 0
 
     # -- helpers ------------------------------------------------------------------------
     def _fire(self, rule: EscalationRuleSpec, *, object_type: str, object_id: str, title: str, description: str,
               period: str = "once", source_ids: Iterable[str] = ()) -> Escalation | None:
         org = self.policy.organization_id
+        # One open alert per unresolved condition: while an alert for (rule, object) is OPEN or
+        # ACKNOWLEDGED, re-evaluation does not create another, whatever the period.
+        condition = f"escalation:{rule.rule_id}:{object_type}:{object_id}"
+        if any(a.dedupe_key == condition and a.organization_id == org for a in self.alerts.repo.query(
+                {"status__in": [AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]}, limit=500)):
+            self.suppressed += 1
+            return None
         key = idempotency_key(org, "escalation", rule.rule_id, object_type, object_id, period)
         fresh, _ = self.idempotency.claim(org, key)
         if not fresh:
             return None
         alert = self.alerts.create(organization_id=org, severity=Severity(rule.severity), category=f"ESCALATION:{rule.type}",
                                    title=title, description=description, source_ids=source_ids,
-                                   related_object_type=object_type, related_object_id=object_id, dedupe_key=key)
+                                   related_object_type=object_type, related_object_id=object_id, dedupe_key=condition)
         task_id = None
         if rule.create_task:
             human = rule.escalate_to.startswith("human:")
@@ -181,6 +189,41 @@ class EscalationEngine:
                         fired.append(self._fire(rule, object_type="alert", object_id=a.alert_id,
                                                 title=f"Critical risk: {a.title}", description=a.description,
                                                 source_ids=a.source_ids))
+            elif rule.type == "CUSTOMER_HEALTH_LOW":
+                custs = [s for s in signals if s.get("type") == "customer"]
+                if not custs:
+                    not_evaluable.append(f"{rule.rule_id}: no customer data supplied by a connector")
+                    continue
+                for c in custs:
+                    if not c.get("source_id") or c.get("health_score") is None:
+                        continue
+                    if Decimal(str(c["health_score"])) < Decimal(str(p["threshold"])):
+                        fired.append(self._fire(rule, object_type="customer", object_id=str(c["id"]),
+                                                title=f"Customer health {c['health_score']} below {p['threshold']}: "
+                                                      f"{c.get('name', c['id'])}",
+                                                description="Critical customer-health deterioration (sourced).",
+                                                source_ids=(c["source_id"],)))
+            elif rule.type == "PROJECT_BLOCKED":
+                projects = [s for s in signals if s.get("type") == "project"]
+                if not projects:
+                    not_evaluable.append(f"{rule.rule_id}: no project data supplied by a connector")
+                    continue
+                for pr in projects:
+                    if not pr.get("source_id") or pr.get("status") != "BLOCKED" or pr.get("blocked_days") is None:
+                        continue
+                    if int(pr["blocked_days"]) >= int(p["days"]):
+                        fired.append(self._fire(rule, object_type="project", object_id=str(pr["id"]),
+                                                title=f"Project blocked {pr['blocked_days']} days: {pr.get('name', pr['id'])}",
+                                                description="Blocked project needs a decision or unblocking owner.",
+                                                source_ids=(pr["source_id"],)))
+            elif rule.type == "COMPLIANCE_DEADLINE":
+                horizon = now.date() + timedelta(days=int(p["days"]))
+                for t in self.tasks.repo.list(lambda t: t.organization_id == org and t.due_date is not None
+                                              and t.due_date <= horizon and "missed_compliance_events" in t.kpi_affected
+                                              and t.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)):
+                    fired.append(self._fire(rule, object_type="task", object_id=t.task_id,
+                                            title=f"Compliance deadline {t.due_date}: {t.title}",
+                                            description=f"Owner {t.owner}; status {t.status.value}."))
             elif rule.type == "DEAL_STALLED":
                 deals = [s for s in signals if s.get("type") == "opportunity"]
                 if not deals:
@@ -198,3 +241,50 @@ class EscalationEngine:
                                                 source_ids=(d["source_id"],)))
             out.extend(e for e in fired if e is not None)
         return EscalationReport(tuple(out), tuple(not_evaluable))
+
+
+# ---------------------------------------------------------------------------------------
+# signals from connectors (sourced records only)
+# ---------------------------------------------------------------------------------------
+def _days_since(value: Any, now: datetime) -> int | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        return None
+    return (now - ts).days
+
+
+def collect_signals(read_tools: Any, organization_id: str, now: datetime) -> tuple[list[dict], list[str]]:
+    """Read connector views for opportunities, customers and projects. Records without a source id
+    are ignored; absent connectors are reported, never filled in."""
+    from .executors import ToolInvocation
+    signals: list[dict] = []
+    notes: list[str] = []
+    if read_tools is None:
+        return signals, ["no read tools configured"]
+    for tool, kind in (("read_opportunities", "opportunity"), ("read_customers", "customer"),
+                       ("read_projects", "project")):
+        if not read_tools.supports(tool):
+            notes.append(f"{tool}: no connector configured")
+            continue
+        res = read_tools.execute(ToolInvocation(organization_id, "escalation_engine", "-", tool, tool, {"limit": 50}))
+        if not res.success:
+            notes.append(f"{tool}: {res.status.value} {res.error or ''}".strip())
+            continue
+        for rec, sid in zip(res.data.get("records", []), res.source_ids):
+            item = {"type": kind, "id": rec.get("source_record_id") or rec.get("record_id"), "name": rec.get("name"),
+                    "source_id": sid}
+            if kind == "opportunity":
+                item.update(value=rec.get("amount"), days_since_activity=_days_since(rec.get("last_activity_at"), now))
+                if item["value"] is None or item["days_since_activity"] is None:
+                    continue
+            elif kind == "customer":
+                item["health_score"] = rec.get("health_score")
+            else:
+                item.update(status=rec.get("status"), blocked_days=_days_since(rec.get("blocked_since"), now))
+            signals.append(item)
+    return signals, notes

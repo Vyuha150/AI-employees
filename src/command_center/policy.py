@@ -88,6 +88,28 @@ class SchedulerPolicy:
     enabled: bool = False
     max_catch_up_runs: int = 1
     lookback_hours: float = 24.0
+    escalation_cron: str | None = None      # periodic escalation evaluation (system job); None = off
+
+
+BRIEFING_CONDITIONS = frozenset({"PRODUCT_ACTIVITY", "PURCHASE_ACTIVITY", "PEOPLE_AUTHORIZED"})
+
+
+@dataclass(frozen=True)
+class BriefingPolicy:
+    """Explicit participants of the system brief workflows. Workflows never add agents dynamically."""
+
+    daily_data_agent: str = "data_analyst"
+    daily_specialists: tuple[str, ...] = ("cfo", "sales_director", "operations", "customer_success",
+                                          "marketing_director")
+    weekly_core: tuple[str, ...] = ("sales_director", "cfo", "operations", "customer_success", "marketing_director",
+                                    "legal_risk")
+    weekly_conditional: Mapping[str, str] = field(default_factory=lambda: {
+        "product_analyst": "PRODUCT_ACTIVITY", "procurement": "PURCHASE_ACTIVITY",
+        "people_performance": "PEOPLE_AUTHORIZED"})
+
+    def all_agents(self) -> set[str]:
+        return {self.daily_data_agent, *self.daily_specialists, *self.weekly_core, *self.weekly_conditional,
+                "chief_of_staff"}
 
 
 @dataclass(frozen=True)
@@ -116,6 +138,7 @@ class RetryPolicies:
 ESCALATION_TYPES = frozenset({
     "TASK_OVERDUE", "TASK_BLOCKED_TOO_LONG", "APPROVAL_PENDING_TOO_LONG", "TOOL_FAILURE_REPEATED",
     "RUN_FAILURE_REPEATED", "EXECUTION_UNKNOWN", "KPI_THRESHOLD", "CRITICAL_RISK_DETECTED", "DEAL_STALLED",
+    "CUSTOMER_HEALTH_LOW", "PROJECT_BLOCKED", "COMPLIANCE_DEADLINE",
 })
 
 
@@ -170,6 +193,8 @@ class OrganizationPolicy:
     attachments: AttachmentPolicy = field(default_factory=AttachmentPolicy)
     placeholders: tuple[str, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    external_adapters: Mapping[str, Any] = field(default_factory=dict)     # tool -> AdapterSetting (all off)
+    briefing: BriefingPolicy = field(default_factory=BriefingPolicy)
 
     def privacy_gate_open(self, tool_name: str) -> bool:
         gate = self.privacy_gates.get(tool_name)
@@ -253,6 +278,8 @@ class OrganizationPolicy:
                 if raw.get("attachments") else AttachmentPolicy(),
                 placeholders=tuple(raw.get("placeholders") or ()),
                 raw=dict(raw),
+                external_adapters=_adapters(raw.get("external_adapters")),
+                briefing=_briefing(raw.get("briefing")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             if isinstance(exc, ConfigurationError):
@@ -302,6 +329,32 @@ def resolve_dotted(raw: Any, path: str) -> Any:
         else:
             return _MISSING
     return node
+
+
+def _adapters(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    from .adapters import adapter_settings_from_policy
+    try:
+        return adapter_settings_from_policy(raw)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from None
+
+
+def _briefing(raw: Mapping[str, Any] | None) -> BriefingPolicy:
+    if not raw:
+        return BriefingPolicy()
+    try:
+        b = BriefingPolicy(raw["daily"]["data_agent"], tuple(raw["daily"]["specialists"]),
+                           tuple(raw["weekly"]["core"]), dict(raw["weekly"].get("conditional") or {}))
+    except (KeyError, TypeError) as exc:
+        raise ConfigurationError(f"briefing section invalid: {exc!r}") from None
+    for agent, cond in b.weekly_conditional.items():
+        if cond not in BRIEFING_CONDITIONS:
+            raise ConfigurationError(f"briefing.weekly.conditional.{agent}: unknown condition {cond!r}")
+    people = "people_performance"
+    if people in b.daily_specialists or people in b.weekly_core or \
+            (people in b.weekly_conditional and b.weekly_conditional[people] != "PEOPLE_AUTHORIZED"):
+        raise ConfigurationError("people_performance may join briefs only under PEOPLE_AUTHORIZED (privacy gate)")
+    return b
 
 
 def _budgets(raw: Mapping[str, Any] | None) -> BudgetPolicy:

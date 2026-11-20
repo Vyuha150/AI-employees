@@ -273,15 +273,21 @@ class AgentRuntime:
                         break
                     self.sleep(setting.backoff_seconds * (2 ** (attempt - 1)))
                     continue
-                fallback_from = None
+                fallback_from = reason = None
                 if idx > 0 or turn.fallback_used:
                     fallback_from = f"{original[0]}/{original[1]}"
+                    reason = (f"configured fallback after provider error: {last}" if idx > 0 and last is not None
+                              else "server-side refusal fallback (enabled in models.yaml)")
                     cc.audit.record(EventType.MODEL_FALLBACK_USED, organization_id=org, actor_type=ActorType.SYSTEM,
                                     actor_id="runtime", agent_id=agent.agent_id, run_id=run_id,
                                     object_type="agent_run", object_id=run_id,
                                     payload={"from": fallback_from, "to": f"{turn.provider}/{turn.model}",
-                                             "server_side": turn.fallback_used and idx == 0})
-                cc.runs.set_model(run_id, provider=turn.provider, model=turn.model, fallback_from=fallback_from)
+                                             "requested_model": original[1], "requested_provider": original[0],
+                                             "fallback_model": turn.model, "fallback_provider": turn.provider,
+                                             "reason": str(reason)[:300], "timestamp": cc.clock().isoformat(),
+                                             "run_id": run_id, "server_side": turn.fallback_used and idx == 0})
+                cc.runs.set_model(run_id, provider=turn.provider, model=turn.model, fallback_from=fallback_from,
+                                  fallback_reason=reason)
                 cc.audit.record(EventType.MODEL_CALLED, organization_id=org, actor_type=ActorType.SYSTEM,
                                 actor_id="runtime", agent_id=agent.agent_id, run_id=run_id, object_type="agent_run",
                                 object_id=run_id, payload={"provider": turn.provider, "model": turn.model,

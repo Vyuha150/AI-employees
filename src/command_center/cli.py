@@ -28,6 +28,40 @@ def _prompt_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _readiness(args: argparse.Namespace) -> int:
+    from .readiness import Readiness, readiness
+    rep = readiness(args.config_dir, args.env)
+    print(rep.render())
+    return {Readiness.READY: 0, Readiness.DEGRADED: 1, Readiness.NOT_READY: 2}[rep.status]
+
+
+def _connectors_status(args: argparse.Namespace) -> int:
+    import os
+    dsn = os.environ.get("CC_DATABASE_URL")
+    if not dsn:
+        print("connectors: UNAVAILABLE (CC_DATABASE_URL not set; no connector views can be read)")
+        return 1
+    from .pg.database import Database
+    from .pg.diagnostics import connector_status, organization_uuid
+    db = Database(dsn)
+    try:
+        org = organization_uuid(db, args.org)
+        if org is None:
+            print(f"organization {args.org!r} not found")
+            return 1
+        rows = connector_status(db, org)
+    finally:
+        db.close()
+    print(f"connectors for {args.org}:")
+    print(f"  {'view':32} {'state':11} {'contract':10} {'rows':>5}  last successful refresh / latest error")
+    for r in rows:
+        extra = r["last_successful_refresh"] or "never"
+        if r["latest_error"]:
+            extra += f" / ERROR: {r['latest_error']}"
+        print(f"  {r['view']:32} {r['state']:11} {str(r['contract'])[:10]:10} {r['rows']:>5}  {extra}")
+    return 0 if all(r["state"] == "OK" for r in rows) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ai-command-center")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -39,6 +73,17 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--config-dir", default=None, help="organization config directory (default: CC_CONFIG_DIR or packaged defaults)")
     v.add_argument("--env", default=None, help="development | test | production (default: CC_ENVIRONMENT)")
     v.set_defaults(func=_config_validate)
+
+    rd = sub.add_parser("readiness", help="production readiness: READY | DEGRADED | NOT_READY")
+    rd.add_argument("--config-dir", default=None)
+    rd.add_argument("--env", default=None)
+    rd.set_defaults(func=_readiness)
+
+    con = sub.add_parser("connectors", help="connector view diagnostics")
+    con_sub = con.add_subparsers(dest="connectors_command", required=True)
+    cs = con_sub.add_parser("status", help="configured / unavailable / stale / last refresh / latest error")
+    cs.add_argument("--org", required=True, help="organization slug")
+    cs.set_defaults(func=_connectors_status)
 
     pr = sub.add_parser("prompt", help="render an agent system prompt preview")
     pr.add_argument("agent_id")

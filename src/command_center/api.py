@@ -44,6 +44,13 @@ def to_json(value: Any) -> Any:
     return value
 
 
+def _q(repo: Any, p: Principal, filters: Mapping[str, Any], order_by: str, limit: int, offset: int) -> list[Any]:
+    """Database-side filtered, ordered, paginated listing scoped to the principal's organization."""
+    flt = {k: v for k, v in filters.items() if v is not None}
+    rows = repo.query(flt, order_by=order_by, limit=limit, offset=offset)
+    return [r for r in rows if getattr(r, "organization_id", None) == p.organization_id]
+
+
 def _need(principal: Principal, permission: str) -> None:
     if not principal.has(permission):
         raise PermissionDeniedError(f"missing permission {permission!r}")
@@ -85,11 +92,9 @@ class ApiService:
         return to_json(owned(self._cc(p).runs.repo.find(run_id), p, "run"))
 
     def list_runs(self, p: Principal, *, agent_id: str | None = None, status: str | None = None,
-                  limit: int = 50) -> list[dict]:
-        rows = self._cc(p).runs.repo.list(lambda r: r.organization_id == p.organization_id
-                                          and (agent_id is None or r.agent_id == agent_id)
-                                          and (status is None or r.status.value == status))
-        return [to_json(r) for r in sorted(rows, key=lambda r: r.created_at, reverse=True)[:limit]]
+                  limit: int = 50, offset: int = 0) -> list[dict]:
+        rows = _q(self._cc(p).runs.repo, p, {"agent_id": agent_id, "status": status}, "-created_at", limit, offset)
+        return [to_json(r) for r in rows]
 
     def cancel_run(self, p: Principal, run_id: str, reason: str) -> dict:
         cc = self._cc(p)
@@ -101,12 +106,19 @@ class ApiService:
         return to_json(cc.runs.transition(run_id, RunStatus.CANCELLED, reason=reason, actor_type=ActorType.HUMAN,
                                           actor_id=p.principal_id))
 
+    # -- conversations ----------------------------------------------------------------
+    def list_conversations(self, p: Principal, limit: int = 50) -> list[dict]:
+        return [to_json(c) for c in self._cc(p).conversations.list_conversations(p, limit=limit)]
+
+    def list_messages(self, p: Principal, conversation_id: str, *, after_seq: int = 0, limit: int = 50) -> dict:
+        page = self._cc(p).conversations.list_messages(p, conversation_id, after_seq=after_seq, limit=limit)
+        return {"items": [to_json(m) for m in page.items], "next_cursor": page.next_cursor}
+
     # -- tasks ------------------------------------------------------------------------
-    def list_tasks(self, p: Principal, *, status: str | None = None, owner: str | None = None) -> list[dict]:
-        rows = self._cc(p).tasks.repo.list(lambda t: t.organization_id == p.organization_id
-                                           and (status is None or t.status.value == status)
-                                           and (owner is None or t.owner == owner))
-        return [to_json(t) for t in sorted(rows, key=lambda t: t.created_at)]
+    def list_tasks(self, p: Principal, *, status: str | None = None, owner: str | None = None,
+                   limit: int = 100, offset: int = 0) -> list[dict]:
+        rows = _q(self._cc(p).tasks.repo, p, {"status": status, "owner": owner}, "created_at", limit, offset)
+        return [to_json(t) for t in rows]
 
     def create_task(self, p: Principal, data: Mapping[str, Any]) -> dict:
         _need(p, "tasks:write")
@@ -122,11 +134,10 @@ class ApiService:
                                            actor_id=p.principal_id, reason=reason))
 
     # -- outputs ----------------------------------------------------------------------
-    def list_outputs(self, p: Principal, *, agent_id: str | None = None, kind: str | None = None) -> list[dict]:
-        rows = self._cc(p).outputs.repo.list(lambda o: o.organization_id == p.organization_id
-                                             and (agent_id is None or o.agent_id == agent_id)
-                                             and (kind is None or o.kind.value == kind))
-        return [self._output(o, content=False) for o in sorted(rows, key=lambda o: o.created_at, reverse=True)]
+    def list_outputs(self, p: Principal, *, agent_id: str | None = None, kind: str | None = None,
+                     limit: int = 50, offset: int = 0) -> list[dict]:
+        rows = _q(self._cc(p).outputs.repo, p, {"agent_id": agent_id, "kind": kind}, "-created_at", limit, offset)
+        return [self._output(o, content=False) for o in rows]
 
     def get_output(self, p: Principal, output_id: str) -> dict:
         return self._output(owned(self._cc(p).outputs.repo.find(output_id), p, "output"), content=True)
@@ -153,10 +164,10 @@ class ApiService:
         return {"output_id": out.output_id, "composite_score": str(ev.composite_score), "decision": ev.decision.value}
 
     # -- recommendations --------------------------------------------------------------
-    def list_recommendations(self, p: Principal, *, status: str | None = None) -> list[dict]:
-        rows = self._cc(p).recommendations.repo.list(lambda r: r.organization_id == p.organization_id
-                                                     and (status is None or r.status.value == status))
-        return [to_json(r) for r in sorted(rows, key=lambda r: r.created_at)]
+    def list_recommendations(self, p: Principal, *, status: str | None = None, limit: int = 100,
+                             offset: int = 0) -> list[dict]:
+        rows = _q(self._cc(p).recommendations.repo, p, {"status": status}, "created_at", limit, offset)
+        return [to_json(r) for r in rows]
 
     def _decide_rec(self, p: Principal, rec_id: str, target: RecommendationStatus, reason: str | None) -> dict:
         _need(p, "recommendations:decide")
@@ -182,10 +193,10 @@ class ApiService:
                                                                 actor_type=ActorType.HUMAN))
 
     # -- approvals --------------------------------------------------------------------
-    def list_approvals(self, p: Principal, *, status: str | None = None) -> list[dict]:
-        rows = self._cc(p).approvals.repo.list(lambda a: a.organization_id == p.organization_id
-                                               and (status is None or a.status.value == status))
-        return [to_json(a) for a in sorted(rows, key=lambda a: a.requested_at)]
+    def list_approvals(self, p: Principal, *, status: str | None = None, limit: int = 100,
+                       offset: int = 0) -> list[dict]:
+        rows = _q(self._cc(p).approvals.repo, p, {"status": status}, "requested_at", limit, offset)
+        return [to_json(a) for a in rows]
 
     def approve_action(self, p: Principal, approval_id: str, note: str | None = None) -> dict:
         cc = self._cc(p)
@@ -205,10 +216,9 @@ class ApiService:
     def get_kpi_history(self, p: Principal, kpi: str, limit: int = 100) -> list[dict]:
         return [to_json(s) for s in self._cc(p).kpis.history(p.organization_id, kpi, limit)]
 
-    def list_alerts(self, p: Principal, *, status: str | None = None) -> list[dict]:
-        from .state_machines import AlertStatus
-        return [to_json(a) for a in self._cc(p).alerts.list(p.organization_id,
-                                                            status=[AlertStatus(status)] if status else None)]
+    def list_alerts(self, p: Principal, *, status: str | None = None, limit: int = 100,
+                    offset: int = 0) -> list[dict]:
+        return [to_json(a) for a in _q(self._cc(p).alerts.repo, p, {"status": status}, "created_at", limit, offset)]
 
     # -- briefs -----------------------------------------------------------------------
     def _latest_doc(self, p: Principal, kind: str, field: str, value: str) -> dict | None:
@@ -229,15 +239,20 @@ class ApiService:
 
     # -- audit / performance ----------------------------------------------------------
     def list_audit_events(self, p: Principal, *, object_type: str | None = None, object_id: str | None = None,
-                          limit: int = 200) -> list[dict]:
+                          limit: int = 200, after_sequence: int = 0) -> list[dict]:
         _need(p, "audit:read")
-        events = self._cc(p).audit.store.events(organization_id=p.organization_id, object_type=object_type,
-                                                object_id=object_id)
+        store = self._cc(p).audit.store
+        if hasattr(store, "page"):
+            events = store.page(after_sequence=after_sequence, limit=limit, organization_id=p.organization_id,
+                                object_type=object_type, object_id=object_id)
+        else:
+            events = [e for e in store.events(organization_id=p.organization_id, object_type=object_type,
+                                              object_id=object_id) if e.sequence > after_sequence][:limit]
         return [{"event_id": e.event_id, "sequence": e.sequence, "timestamp": e.timestamp.isoformat(),
                  "event_type": e.event_type.value, "actor_type": e.actor_type.value, "actor_id": e.actor_id,
                  "agent_id": e.agent_id, "run_id": e.run_id, "object_type": e.object_type, "object_id": e.object_id,
                  "previous_state": e.previous_state, "new_state": e.new_state, "payload": e.payload}
-                for e in events[-limit:]]
+                for e in events]
 
     def get_agent_performance(self, p: Principal, agent_id: str, period: str = "30d") -> dict:
         _need(p, "performance:read")

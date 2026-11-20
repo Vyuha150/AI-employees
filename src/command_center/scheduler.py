@@ -112,7 +112,29 @@ class Scheduler:
                 else:
                     job = self.jobs.update(replace(job, version=existing.version), expected_version=existing.version)
                 out.append(job)
+        out.extend(self._sync_system_jobs(now))
         return out
+
+    def _sync_system_jobs(self, now: datetime) -> list[ScheduledJob]:
+        """Organization-policy jobs (escalation evaluation). Agent YAML escalation text is guidance only."""
+        from .workflow_catalog import ESCALATION_JOB_ID, ESCALATION_JOB_OWNER
+        cron_text = self.policy.scheduler.escalation_cron
+        existing = self.jobs.find(ESCALATION_JOB_ID)
+        if cron_text is None and existing is None:
+            return []
+        tz = self.policy.timezone
+        enabled = bool(cron_text) and self.policy.scheduler.enabled
+        cron_text = cron_text or (existing.cron if existing else "*/15 * * * *")
+        cron = CronExpression.parse(cron_text)
+        job = ScheduledJob(ESCALATION_JOB_ID, self.policy.organization_id, ESCALATION_JOB_OWNER,
+                           "escalation_evaluation", cron_text, tz, enabled, MissedRunPolicy.RUN_ONCE,
+                           ConcurrencyPolicy.FORBID, existing.watermark if existing else now,
+                           cron.next_after(now, tz) if enabled else None, existing.last_run_at if existing else None)
+        if existing is None:
+            self.jobs.add(job)
+        else:
+            job = self.jobs.update(replace(job, version=existing.version), expected_version=existing.version)
+        return [job]
 
     def _record(self, job: ScheduledJob, when: datetime, status: ScheduledRunStatus, key: str, reason: str,
                 ref: str | None = None) -> ScheduledRun:

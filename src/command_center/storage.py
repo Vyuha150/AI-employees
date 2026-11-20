@@ -12,11 +12,45 @@ from __future__ import annotations
 import copy
 import threading
 from dataclasses import replace
-from typing import Callable, Generic, Iterable, Protocol, TypeVar
+from typing import Any, Callable, Generic, Iterable, Mapping, Protocol, TypeVar
 
 from .errors import ConcurrencyError, NotFoundError
 
 T = TypeVar("T")
+
+
+MAX_PAGE = 500
+
+
+def clamp_limit(limit: int) -> int:
+    return max(1, min(int(limit), MAX_PAGE))
+
+
+def _sortable(v: Any) -> Any:
+    return getattr(v, "value", v)
+
+
+def matches_filters(record: Any, filters: Mapping[str, Any]) -> bool:
+    """Filter syntax shared by repositories: {"field": v, "field__in": [...], "field__gt": v,
+    "field__gte": v, "field__lt": v, "field__lte": v}. Enum values compare by value."""
+    for key, want in filters.items():
+        name, _, op = key.partition("__")
+        if op not in ("", "in", "gt", "gte", "lt", "lte"):
+            raise ValueError(f"unsupported filter operator {op!r}")
+        have = _sortable(getattr(record, name))
+        if op in ("in",):
+            if have not in {_sortable(w) for w in want}:
+                return False
+            continue
+        want = _sortable(want)
+        if op == "" and have != want:
+            return False
+        if op and have is None:
+            return False
+        if (op == "gt" and not have > want) or (op == "gte" and not have >= want) \
+                or (op == "lt" and not have < want) or (op == "lte" and not have <= want):
+            return False
+    return True
 
 
 class Repository(Protocol[T]):
@@ -74,6 +108,18 @@ class InMemoryRepository(Generic[T]):
         with self._lock:
             rows: Iterable[T] = list(self._rows.values())
         return [r for r in rows if predicate is None or predicate(r)]
+
+    def query(self, filters: Mapping[str, Any] | None = None, *, order_by: str | None = None,
+              limit: int = 50, offset: int = 0) -> list[T]:
+        """Same contract as the PostgreSQL implementation (see storage.Query)."""
+        with self._lock:
+            rows = list(self._rows.values())
+        rows = [r for r in rows if matches_filters(r, filters or {})]
+        if order_by:
+            key = order_by.lstrip("-")
+            rows.sort(key=lambda r: (_sortable(getattr(r, key)), getattr(r, self._id_field)),
+                      reverse=order_by.startswith("-"))
+        return rows[offset:offset + clamp_limit(limit)]
 
 
 def frozen_copy(value):

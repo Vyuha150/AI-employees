@@ -21,6 +21,7 @@ from .audit import EventType
 from .common import ActorType, Principal, new_id
 from .context import ExplicitContext
 from .errors import NotFoundError, PermissionDeniedError, ValidationFailedError
+from .state_machines import RunStatus
 from .tenancy import TenantRegistry
 
 MAX_MESSAGE_CHARS = 20000
@@ -34,6 +35,7 @@ class CommandRequest:
     attachments: tuple[str, ...] = ()
     context_selection: tuple[ExplicitContext, ...] = ()
     conversation_id: str | None = None
+    idempotency_key: str | None = None      # client-supplied; duplicates return the original receipt
 
 
 @dataclass(frozen=True)
@@ -94,12 +96,25 @@ class AttachmentStore:
 
 @dataclass
 class CommandService:
+    """Commands are persisted to the tenant's ConversationService. With a durable `queue`
+    (production) the run is enqueued as an `agent_run` job and executed by a JobWorker; without
+    one, `executor` runs it (SyncExecutor / ThreadExecutor for development and tests)."""
+
     tenants: TenantRegistry
     attachments: AttachmentStore = field(default_factory=AttachmentStore)
     extractor: DocumentExtractor | None = None
     executor: JobExecutor = field(default_factory=SyncExecutor)
-    messages: list[ConversationMessage] = field(default_factory=list)
+    queue: Any = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def messages(self) -> list[Any]:
+        """All persisted messages of every tenant this service serves (diagnostics/tests)."""
+        out: list[Any] = []
+        for cc in self.tenants.tenants.values():
+            if cc.conversations is not None:
+                out.extend(cc.conversations.all_messages())
+        return out
 
     def submit(self, principal: Principal, req: CommandRequest) -> CommandReceipt:
         if req.organization_id != principal.organization_id:
@@ -111,6 +126,11 @@ class CommandService:
         text = req.message.strip()
         if not text or len(text) > MAX_MESSAGE_CHARS:
             raise ValidationFailedError(f"message must be 1..{MAX_MESSAGE_CHARS} characters")
+
+        if self.queue is not None and req.idempotency_key:
+            existing = self.queue.find_by_key(principal.organization_id, f"command:{req.idempotency_key}")
+            if existing is not None:
+                return CommandReceipt(existing.run_id, existing.payload.get("conversation_id", ""), "DUPLICATE")
 
         explicit = list(req.context_selection)
         for file_id in req.attachments:
@@ -124,21 +144,50 @@ class CommandService:
                 raise ValidationFailedError(f"attachment {file_id} cannot be used", reasons)
             explicit.append(ExplicitContext(f"att-{file_id}", att.name, self.extractor.extract(att)))
 
-        conversation_id = req.conversation_id or new_id("conv")
-        if req.conversation_id and any(m.conversation_id == conversation_id and
-                                       m.organization_id != principal.organization_id for m in self.messages):
-            raise NotFoundError("conversation not found")
+        convs = cc.conversations
+        if req.conversation_id:
+            conv = convs.get(principal, req.conversation_id)          # NotFound across organizations
+        else:
+            conv = convs.create(principal, title=text[:80], primary_agent_id=req.requested_agent)
         run = cc.runs.create_run(req.requested_agent, principal, text[:200])
-        with self._lock:
-            self.messages.append(ConversationMessage(new_id("msg"), principal.organization_id, conversation_id,
-                                                     principal.principal_id, "user", text, run.run_id, cc.clock()))
+        convs.add_message(conv.conversation_id, sender_type=ActorType.HUMAN, sender_id=principal.principal_id,
+                          content=text, run_id=run.run_id, attachment_ids=req.attachments)
+        request_id = new_id("req")
         cc.audit.record(EventType.COMMAND_RECEIVED, organization_id=principal.organization_id,
                         actor_type=ActorType.HUMAN, actor_id=principal.principal_id, agent_id=req.requested_agent,
-                        run_id=run.run_id, object_type="conversation", object_id=conversation_id,
+                        run_id=run.run_id, object_type="conversation", object_id=conv.conversation_id,
                         payload={"message_chars": len(text), "attachments": list(req.attachments),
                                  "context_items": len(explicit)})
+
+        if self.queue is not None:
+            from .jobs import AGENT_RUN, SideEffect, new_job
+            job, created = self.queue.enqueue(new_job(
+                organization_id=principal.organization_id, job_type=AGENT_RUN,
+                idempotency_key=f"command:{req.idempotency_key or run.run_id}", side_effect=SideEffect.INTERNAL,
+                run_id=run.run_id, now=cc.clock(), timeout_seconds=900,
+                max_attempts=2,     # one reclaim if the worker died before the run started (never a retry)
+                payload={"message": text, "conversation_id": conv.conversation_id, "request_id": request_id,
+                         "explicit": [{"item_id": e.item_id, "title": e.title, "text": e.text} for e in explicit]}))
+            if not created:   # lost a race with an identical submission: never run twice
+                cc.runs.transition(run.run_id, RunStatus.CANCELLED, reason="duplicate idempotency key")
+                return CommandReceipt(job.run_id, job.payload.get("conversation_id", ""), "DUPLICATE")
+            cc.audit.record(EventType.JOB_ENQUEUED, organization_id=principal.organization_id,
+                            actor_type=ActorType.SYSTEM, actor_id="commands", run_id=run.run_id, object_type="job",
+                            object_id=job.job_id, payload={"job_type": job.job_type})
+            return CommandReceipt(run.run_id, conv.conversation_id, cc.runs.get(run.run_id).status.value)
+
         ctx = RunContext("Command from an organization member", (), (), text, principal,
-                         conversation_id=conversation_id, request_id=new_id("req"),
+                         conversation_id=conv.conversation_id, request_id=request_id,
                          requested_agent_id=req.requested_agent, request_timestamp=cc.clock())
-        self.executor.submit(lambda: cc.runtime.execute(run.run_id, ctx, message=text, explicit=explicit))
-        return CommandReceipt(run.run_id, conversation_id, cc.runs.get(run.run_id).status.value)
+
+        def job() -> Any:
+            result = cc.runtime.execute(run.run_id, ctx, message=text, explicit=explicit)
+            if result.output_id:
+                out = cc.outputs.get(result.output_id)
+                if out.validity.value == "VALID":
+                    convs.add_message(conv.conversation_id, sender_type=ActorType.AGENT, sender_id=run.agent_id,
+                                      agent_id=run.agent_id, content=out.content.get("executive_summary", ""),
+                                      structured_content={"output_id": out.output_id}, run_id=run.run_id)
+            return result
+        self.executor.submit(job)
+        return CommandReceipt(run.run_id, conv.conversation_id, cc.runs.get(run.run_id).status.value)

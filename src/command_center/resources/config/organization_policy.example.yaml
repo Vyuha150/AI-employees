@@ -69,6 +69,7 @@ scheduler:
   enabled: true
   max_catch_up_runs: 3                  # hard cap for CATCH_UP jobs
   lookback_hours: 48                    # missed occurrences older than this are never run
+  escalation_cron: "*/15 * * * *"       # system job: evaluate the escalation rules below
 
 context_limits:
   max_memory_items: 20
@@ -96,6 +97,9 @@ escalations:
   - {rule_id: customer_health_low, type: KPI_THRESHOLD, kpi: customer_health, operator: "<", threshold: 50, severity: WARNING, escalate_to: customer_success, create_task: true}
   - {rule_id: critical_risk, type: CRITICAL_RISK_DETECTED, severity: CRITICAL, escalate_to: "human:FOUNDER", create_task: true}
   - {rule_id: deal_stalled, type: DEAL_STALLED, days: 14, min_value: 500000, severity: WARNING, escalate_to: sales_director, create_task: true}
+  - {rule_id: customer_health_critical, type: CUSTOMER_HEALTH_LOW, threshold: 40, severity: CRITICAL, escalate_to: customer_success, create_task: true}
+  - {rule_id: project_blocked, type: PROJECT_BLOCKED, days: 2, severity: WARNING, escalate_to: operations, create_task: true}
+  - {rule_id: compliance_deadline, type: COMPLIANCE_DEADLINE, days: 7, severity: CRITICAL, escalate_to: legal_risk, create_task: false}
 
 # Privacy gates. A gated tool stays unavailable until a human privacy review approves it.
 privacy_gates:
@@ -104,6 +108,27 @@ privacy_gates:
     reviewed_by: null
     reviewed_at: null
     allowed_fields: []
+
+# External writes. Every adapter is DISABLED until explicitly enabled here and an adapter is
+# registered. Payments and contract signing have no adapter at all.
+external_adapters:
+  send_customer_message: {enabled: false, adapter: null}
+  schedule_meeting: {enabled: false, adapter: null}
+  modify_customer_record: {enabled: false, adapter: null}
+  create_purchase_order: {enabled: false, adapter: null}
+  publish_marketing_content: {enabled: false, adapter: null}
+
+# System brief workflows: explicit participants. Workflows never add agents dynamically.
+briefing:
+  daily:
+    data_agent: data_analyst
+    specialists: [cfo, sales_director, operations, customer_success, marketing_director]
+  weekly:
+    core: [sales_director, cfo, operations, customer_success, marketing_director, legal_risk]
+    conditional:
+      product_analyst: PRODUCT_ACTIVITY
+      procurement: PURCHASE_ACTIVITY
+      people_performance: PEOPLE_AUTHORIZED
 
 attachments:
   allowed_mime_types: [application/pdf, text/plain, text/csv, text/markdown, image/png, image/jpeg]
@@ -126,3 +151,4 @@ placeholders:
   - orchestration.max_total_cost
   - escalations.cash_runway_low.threshold
   - escalations.deal_stalled.min_value
+  - escalations.customer_health_critical.threshold

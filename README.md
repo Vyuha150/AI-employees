@@ -23,6 +23,7 @@ and an application-enforced control layer:
 | `profiles/chief_of_staff.example.json` | Phase 1 example profile (kept; still valid prompt-builder input) |
 | `docs/architecture.md` | Control flow, guarantees, design decisions, known gaps |
 | `docs/supabase_rls.md`, `docs/workforce_data_privacy.md` | RLS model; people-data privacy gate |
+| `docs/connectors.md` | Connector view contracts, read-tool states, diagnostics |
 
 ## Agents
 
@@ -47,6 +48,8 @@ and an application-enforced control layer:
 pip install -e '.[dev]'                       # or: pip install ai-command-center[postgres,claude]
 ai-command-center config validate --env development
 CC_ENVIRONMENT=production CC_CONFIG_DIR=/etc/command-center ai-command-center config validate
+ai-command-center readiness --env production        # READY | DEGRADED | NOT_READY (exit 0 / 1 / 2)
+CC_DATABASE_URL=... ai-command-center connectors status --org <slug>
 pytest                                        # add CC_TEST_DATABASE_URL=<admin dsn> for PostgreSQL tests
 ```
 
